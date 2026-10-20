@@ -3,8 +3,8 @@ namespace MiniDb.Api;
 /// <summary>Tuning knobs for <see cref="MiniDatabase.Open"/>. The defaults are reasonable for a small database.</summary>
 public sealed class DatabaseOptions
 {
-    /// <summary>Number of 4 KB pages kept in memory. 256 pages is 1 MB.</summary>
-    public int BufferPoolPages { get; init; } = 256;
+    /// <summary>Number of 4 KB pages kept in memory. 4096 pages is 16 MB.</summary>
+    public int BufferPoolPages { get; init; } = 4096;
 
     /// <summary>
     /// When true, every commit is forced to disk before it returns. When false, the most recent commits can be lost

@@ -100,4 +100,42 @@ public class BufferPoolTests
 
         using (pool.Pin(0)) { }
     }
+
+    [Fact]
+    public void SequentialScan_DoesNotEvictHotPages()
+    {
+        var counting = new CountingPageStore(new MemoryPageStore());
+        for (int i = 0; i < 20; i++)
+        {
+            counting.AllocatePage();
+        }
+
+        using var pool = new BufferPool(counting, capacity: 4);
+        using (pool.Pin(0)) { }
+        for (long id = 1; id < 20; id++)
+        {
+            using (pool.Pin(id, sequential: true)) { }
+        }
+
+        int readsBefore = counting.ReadCount;
+        using (pool.Pin(0)) { }
+
+        Assert.Equal(readsBefore, counting.ReadCount);
+    }
+
+    [Fact]
+    public void Prefetch_LoadsPageWithoutPinningIt()
+    {
+        var counting = new CountingPageStore(new MemoryPageStore());
+        counting.AllocatePage();
+        counting.AllocatePage();
+        using var pool = new BufferPool(counting, capacity: 4);
+
+        pool.Prefetch(1);
+        int readsAfterPrefetch = counting.ReadCount;
+        using (pool.Pin(1, sequential: true)) { }
+
+        Assert.Equal(1, readsAfterPrefetch);
+        Assert.Equal(readsAfterPrefetch, counting.ReadCount);
+    }
 }

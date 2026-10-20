@@ -55,8 +55,14 @@ internal static class RowStore
         long pageId = table.HeapRoot;
         while (pageId != 0)
         {
-            using PinnedPage page = pool.Pin(pageId);
+            using PinnedPage page = pool.Pin(pageId, sequential: true);
             int slots = SlotCount(page.Data);
+            long next = NextPage(page.Data);
+            if (next != 0)
+            {
+                pool.Prefetch(next);
+            }
+
             for (int slot = 0; slot < slots; slot++)
             {
                 object?[]? row = ReadLiveSlot(page.Data, table.Schema, slot);
@@ -90,8 +96,14 @@ internal static class RowStore
         long pageId = table.HeapRoot;
         while (pageId != 0)
         {
-            using PinnedPage page = pool.Pin(pageId);
+            using PinnedPage page = pool.Pin(pageId, sequential: true);
             int slots = SlotCount(page.Data);
+            long next = NextPage(page.Data);
+            if (next != 0)
+            {
+                pool.Prefetch(next);
+            }
+
             for (int slot = 0; slot < slots; slot++)
             {
                 byte[]? record = ReadLiveRecord(page.Data, slot);

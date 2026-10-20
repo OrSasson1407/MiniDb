@@ -27,11 +27,29 @@ public sealed class BufferPool : IBufferPool
     /// <summary>Called before any page is written to the data file, so the log is durable first.</summary>
     public Action? BeforeWriteBack { get; set; }
 
-    public PinnedPage Pin(long pageId)
+    public PinnedPage Pin(long pageId) => Pin(pageId, sequential: false);
+
+    /// <summary>
+    /// Pins a page. A sequential access (a table scan) neither promotes a cached page nor loads it at the hot end,
+    /// so one long scan cannot push out the pages that point lookups keep needing.
+    /// </summary>
+    public PinnedPage Pin(long pageId, bool sequential)
     {
-        PageFrame frame = _cached.TryGetValue(pageId, out PageFrame? cached) ? cached : LoadFrame(pageId);
+        PageFrame frame;
+        if (_cached.TryGetValue(pageId, out PageFrame? cached))
+        {
+            frame = cached;
+            if (!sequential)
+            {
+                Touch(frame);
+            }
+        }
+        else
+        {
+            frame = LoadFrame(pageId, sequential);
+        }
+
         frame.PinCount++;
-        Touch(frame);
         if (_tracking && !frame.HasSnapshot)
         {
             // Keep the state before the transaction touches the page, so rollback can restore it.
@@ -163,7 +181,16 @@ public sealed class BufferPool : IBufferPool
         frame.IsDirty = false;
     }
 
-    private PageFrame LoadFrame(long pageId)
+    /// <summary>Loads a page without pinning it, so a later sequential Pin finds it in the cache.</summary>
+    public void Prefetch(long pageId)
+    {
+        if (!_cached.ContainsKey(pageId))
+        {
+            LoadFrame(pageId, sequential: true);
+        }
+    }
+
+    private PageFrame LoadFrame(long pageId, bool sequential)
     {
         PageFrame frame = TakeFrame();
         try
@@ -182,7 +209,15 @@ public sealed class BufferPool : IBufferPool
         frame.TxDirty = false;
         frame.HasSnapshot = false;
         _cached.Add(pageId, frame);
-        _lru.AddFirst(frame.Node);
+        if (sequential)
+        {
+            _lru.AddLast(frame.Node);
+        }
+        else
+        {
+            _lru.AddFirst(frame.Node);
+        }
+
         return frame;
     }
 
