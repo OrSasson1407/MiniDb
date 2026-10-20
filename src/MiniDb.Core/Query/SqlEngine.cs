@@ -72,10 +72,22 @@ internal static class SqlEngine
 
         List<string> names = statement.Columns?.ToList() ?? table.Schema.Columns.Select(c => c.Name).ToList();
         int[] indexes = names.Select(name => ColumnIndex(table.Schema, name)).ToArray();
-        List<object?[]> rows = FilterRows(db, table, statement.Where)
-            .Take(statement.Limit ?? int.MaxValue)
-            .Select(view => indexes.Select(i => view[i]).ToArray())
-            .ToList();
+        int limit = statement.Limit ?? int.MaxValue;
+        AccessPlan plan = ChoosePlan(db, table, statement.Where);
+        List<object?[]> rows;
+        if (plan is IndexRangePlan index && names.All(n => n == table.Schema.PrimaryKey.Name || n == index.Column))
+        {
+            // Covered by the index: each entry already holds the indexed value and the primary key.
+            rows = IndexOnlyRows(db, table, index, names).Take(limit).ToList();
+        }
+        else
+        {
+            rows = FilterRows(db, table, statement.Where, plan)
+                .Take(limit)
+                .Select(view => indexes.Select(i => view[i]).ToArray())
+                .ToList();
+        }
+
         return new QueryResult(names, rows, 0);
     }
 
@@ -86,7 +98,7 @@ internal static class SqlEngine
         int deleted = db.InWriteTransaction(() =>
         {
             // Materialize the matches first so the heap is not changed while it is being read.
-            List<long> keys = FilterRows(db, table, statement.Where)
+            List<long> keys = FilterRows(db, table, statement.Where, ChoosePlan(db, table, statement.Where))
                 .Select(view => view.GetInt64(table.Schema.PrimaryKeyIndex))
                 .ToList();
             return keys.Count(key => RowStore.Delete(db.Pool, table, key));
@@ -94,9 +106,58 @@ internal static class SqlEngine
         return QueryResult.Affected(deleted);
     }
 
-    private static IEnumerable<RowView> FilterRows(MiniDatabase db, TableInfo table, Condition? where)
+    /// <summary>Largest number of index entries a secondary index may return and still be used.</summary>
+    private const int SelectivityLimit = 1024;
+
+    /// <summary>The planner's choice, except that a secondary index is dropped when it would return too many rows.</summary>
+    private static AccessPlan ChoosePlan(MiniDatabase db, TableInfo table, Condition? where)
     {
-        IEnumerable<RowView> rows = Planner.Plan(table.Schema, where, table.SecondaryIndexRoots.Keys) switch
+        AccessPlan plan = Planner.Plan(table.Schema, where, table.SecondaryIndexRoots.Keys);
+        if (plan is IndexRangePlan index && !IsSelective(db, table, index, SelectivityLimit))
+        {
+            return new FullScanPlan();
+        }
+
+        return plan;
+    }
+
+    /// <summary>True when the index range holds at most <paramref name="limit"/> entries.</summary>
+    private static bool IsSelective(MiniDatabase db, TableInfo table, IndexRangePlan range, int limit)
+    {
+        var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
+        int count = 0;
+        foreach (TreeKey _ in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)).Select(entry => entry.Key))
+        {
+            if (++count > limit)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static IEnumerable<object?[]> IndexOnlyRows(MiniDatabase db, TableInfo table, IndexRangePlan range, IReadOnlyList<string> names)
+    {
+        var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
+        ColumnType indexedType = table.Schema.Columns[ColumnIndex(table.Schema, range.Column)].Type;
+        foreach ((TreeKey key, _) in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)))
+        {
+            var row = new object?[names.Count];
+            for (int i = 0; i < names.Count; i++)
+            {
+                row[i] = names[i] == range.Column
+                    ? (indexedType == ColumnType.Int32 ? (object)(int)key.Major : key.Major)
+                    : key.Minor;
+            }
+
+            yield return row;
+        }
+    }
+
+    private static IEnumerable<RowView> FilterRows(MiniDatabase db, TableInfo table, Condition? where, AccessPlan plan)
+    {
+        IEnumerable<RowView> rows = plan switch
         {
             PointLookupPlan point => Single(RowStore.GetView(db.Pool, table, point.Key)),
             KeyRangePlan range => RangeRows(db, table, range),

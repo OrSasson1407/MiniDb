@@ -20,6 +20,11 @@ internal static class RowStore
         var primary = ClusteredTree.Open(pool, table.PrimaryKeyRoot);
         primary.Insert(key, record);
 
+        if (table.SecondaryIndexRoots.Count == 0)
+        {
+            return table with { PrimaryKeyRoot = primary.RootPage };
+        }
+
         var indexRoots = new Dictionary<string, long>(table.SecondaryIndexRoots);
         foreach ((string column, long root) in table.SecondaryIndexRoots)
         {

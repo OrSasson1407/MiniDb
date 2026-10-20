@@ -28,6 +28,9 @@ internal sealed class PageFrame
 
     public int PinCount { get; set; }
 
+    /// <summary>Pins since the page was loaded. Used to update the LRU list only on some of them.</summary>
+    public int Hits { get; set; }
+
     /// <summary>Lock of the partition that owns this frame. Set when the frame is created.</summary>
     public object? Gate { get; set; }
 

@@ -200,4 +200,19 @@ public class SqlExecutionTests : IDisposable
 
         Assert.Throws<MiniDbException>(() => db.Execute("CREATE INDEX ON users (name)"));
     }
+
+    [Fact]
+    public void WideIndexRange_FallsBackToScan_AndStillReturnsEveryRow()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.Execute("CREATE TABLE wide (id BIGINT PRIMARY KEY, n INT)");
+        for (int id = 1; id <= 2500; id++)
+        {
+            db.Execute($"INSERT INTO wide VALUES ({id}, 1)");
+        }
+
+        db.Execute("CREATE INDEX ON wide (n)");
+
+        Assert.Equal(2500, db.Execute("SELECT id FROM wide WHERE n = 1").Rows.Count);
+    }
 }

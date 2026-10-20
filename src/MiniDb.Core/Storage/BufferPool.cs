@@ -262,6 +262,7 @@ public sealed class BufferPool : IBufferPool
         frame.IsDirty = false;
         frame.TxDirty = false;
         frame.HasSnapshot = false;
+        frame.Hits = 0;
         partition.Cached.Add(pageId, frame);
         if (sequential)
         {
@@ -312,8 +313,17 @@ public sealed class BufferPool : IBufferPool
         return null;
     }
 
+    /// <summary>
+    /// Moves a frame to the hot end of the LRU list. Only every fourth hit does it: the list is shared by all readers
+    /// of the partition, and approximate recency is enough to keep hot pages away from eviction.
+    /// </summary>
     private static void Touch(Partition partition, PageFrame frame)
     {
+        if ((++frame.Hits & 3) != 0)
+        {
+            return;
+        }
+
         partition.Lru.Remove(frame.Node);
         partition.Lru.AddFirst(frame.Node);
     }
