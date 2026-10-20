@@ -18,6 +18,9 @@ public sealed class TransactionManager
     private bool _walUnsynced;
     private readonly byte[] _deltaScratch = new byte[PageConstants.PageSize * 2];
 
+    /// <summary>Pages appended by a transaction that did not commit. They are put on the free list at the next chance.</summary>
+    private readonly List<long> _orphanedPages = new();
+
     /// <summary>Raised after every rollback, including the rollback of a failed commit.</summary>
     public event Action? RolledBack;
 
@@ -64,6 +67,7 @@ public sealed class TransactionManager
             _gate.Release();
         }
 
+        ReturnOrphanedPages();
         if (_wal.Length > _checkpointThresholdBytes)
         {
             Checkpoint();
@@ -125,6 +129,30 @@ public sealed class TransactionManager
         {
             _gate.Release();
         }
+
+        ReturnOrphanedPages();
+    }
+
+    /// <summary>
+    /// Puts the pages that a rolled-back transaction appended onto the free list, in a small transaction of their own.
+    /// Runs after the gate is released, while the caller still holds the database's write lock.
+    /// </summary>
+    private void ReturnOrphanedPages()
+    {
+        if (_orphanedPages.Count == 0)
+        {
+            return;
+        }
+
+        long[] pages = _orphanedPages.ToArray();
+        _orphanedPages.Clear();
+        using Transaction freeing = Begin();
+        foreach (long pageId in pages)
+        {
+            FreePages.Push(_pool, pageId);
+        }
+
+        freeing.Commit();
     }
 
     /// <summary>
@@ -163,7 +191,7 @@ public sealed class TransactionManager
 
     private void DiscardChanges()
     {
-        _pool.RollbackTracking();
+        _orphanedPages.AddRange(_pool.RollbackTracking());
         RolledBack?.Invoke();
     }
 }

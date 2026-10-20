@@ -9,7 +9,7 @@ public static class Tokenizer
     {
         "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "SELECT", "FROM", "WHERE", "LIMIT",
         "DELETE", "PRIMARY", "KEY", "TRUE", "FALSE", "INT", "BIGINT", "DOUBLE", "BOOL", "VARCHAR",
-        "INDEX", "ON",
+        "INDEX", "ON", "AND", "OR", "ORDER", "BY", "ASC", "DESC", "GROUP", "UPDATE", "SET", "JOIN", "INNER",
     };
 
     public static IReadOnlyList<Token> Tokenize(string sql)
@@ -116,7 +116,7 @@ public static class Tokenizer
         {
             symbol = sql.Substring(index, 2);
         }
-        else if ("(),*=<>".Contains(c))
+        else if ("(),*=<>.".Contains(c))
         {
             symbol = c.ToString();
         }

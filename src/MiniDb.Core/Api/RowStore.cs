@@ -52,6 +52,44 @@ internal static class RowStore
             ? view
             : null;
 
+    /// <summary>
+    /// Rewrites the row under <paramref name="key"/>, whose primary key does not change. The row is replaced in its leaf,
+    /// and a secondary index is touched only when the indexed value of the row changed.
+    /// </summary>
+    public static TableInfo Update(BufferPool pool, TableInfo table, long key, RowView oldRow, object?[] values)
+    {
+        var primary = ClusteredTree.Open(pool, table.PrimaryKeyRoot);
+        primary.Replace(key, EncodeRow(table.Schema, values));
+
+        Dictionary<string, long>? roots = null;
+        foreach ((string column, long root) in table.SecondaryIndexRoots)
+        {
+            int index = ColumnIndex(table.Schema, column);
+            long before = IndexValue(oldRow, table.Schema, index);
+            long after = IndexValue(values[index]!);
+            if (before == after)
+            {
+                continue;
+            }
+
+            var secondary = BPlusTree.Open(pool, root);
+            secondary.Delete(new TreeKey(before, key));
+            secondary.Insert(new TreeKey(after, key), default);
+            if (secondary.RootPage != root)
+            {
+                roots ??= new Dictionary<string, long>(table.SecondaryIndexRoots);
+                roots[column] = secondary.RootPage;
+            }
+        }
+
+        if (roots is null && primary.RootPage == table.PrimaryKeyRoot)
+        {
+            return table;
+        }
+
+        return table with { PrimaryKeyRoot = primary.RootPage, SecondaryIndexRoots = roots ?? table.SecondaryIndexRoots };
+    }
+
     /// <summary>Removes a row from the primary tree and from every secondary index. Returns false if the key is absent.</summary>
     public static bool Delete(BufferPool pool, TableInfo table, long key)
     {
@@ -97,16 +135,21 @@ internal static class RowStore
     public static IEnumerable<byte[]> ScanRecords(BufferPool pool, TableInfo table) =>
         ClusteredTree.Open(pool, table.PrimaryKeyRoot).Range(long.MinValue, long.MaxValue).Select(cell => cell.Record);
 
-    /// <summary>The value an index stores for a row. Only integer columns can be indexed.</summary>
+    /// <summary>The key an index stores for a value: the integer itself, or the packed prefix of a string.</summary>
     public static long IndexValue(object value) => value switch
     {
         int i => i,
         long l => l,
-        _ => throw new InvalidOperationException("Only integer columns can be indexed."),
+        string s => StringKey.Prefix(s),
+        _ => throw new InvalidOperationException("This column type cannot be indexed."),
     };
 
-    private static long IndexValue(RowView view, TableSchema schema, int column) =>
-        schema.Columns[column].Type == ColumnType.Int32 ? view.GetInt32(column) : view.GetInt64(column);
+    private static long IndexValue(RowView view, TableSchema schema, int column) => schema.Columns[column].Type switch
+    {
+        ColumnType.Int32 => view.GetInt32(column),
+        ColumnType.String => StringKey.Prefix(view.GetString(column)),
+        _ => view.GetInt64(column),
+    };
 
     private static int ColumnIndex(TableSchema schema, string name)
     {

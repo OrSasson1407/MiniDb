@@ -193,12 +193,12 @@ public class SqlExecutionTests : IDisposable
     }
 
     [Fact]
-    public void CreateIndexOnTextColumn_IsRejected()
+    public void CreateIndexOnDoubleColumn_IsRejected()
     {
         using var db = MiniDatabase.Open(DatabasePath);
-        CreateUsers(db);
+        db.Execute("CREATE TABLE measures (id BIGINT PRIMARY KEY, value DOUBLE)");
 
-        Assert.Throws<MiniDbException>(() => db.Execute("CREATE INDEX ON users (name)"));
+        Assert.Throws<MiniDbException>(() => db.Execute("CREATE INDEX ON measures (value)"));
     }
 
     [Fact]

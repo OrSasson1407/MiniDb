@@ -3,7 +3,9 @@ using MiniDb.Records;
 
 namespace MiniDb.Query;
 
-/// <summary>Recursive-descent parser for the supported SQL subset.</summary>
+/// <summary>
+/// Recursive-descent parser for the supported SQL subset. WHERE binds AND tighter than OR, and parentheses group.
+/// </summary>
 public sealed class Parser
 {
     private readonly IReadOnlyList<Token> _tokens;
@@ -40,8 +42,9 @@ public sealed class Parser
             "CREATE" => ParseCreate(),
             "INSERT" => ParseInsert(),
             "SELECT" => ParseSelect(),
+            "UPDATE" => ParseUpdate(),
             "DELETE" => ParseDelete(),
-            _ => throw Error("expected CREATE, INSERT, SELECT or DELETE"),
+            _ => throw Error("expected CREATE, INSERT, SELECT, UPDATE or DELETE"),
         };
     }
 
@@ -142,24 +145,51 @@ public sealed class Parser
     private SelectStatement ParseSelect()
     {
         ExpectKeyword("SELECT");
-        List<string>? columns = null;
+        List<SelectItem>? items = null;
         if (PeekSymbol("*"))
         {
             Advance();
         }
         else
         {
-            columns = new List<string> { ExpectIdentifier("column name") };
+            items = new List<SelectItem> { ParseSelectItem() };
             while (PeekSymbol(","))
             {
                 Advance();
-                columns.Add(ExpectIdentifier("column name"));
+                items.Add(ParseSelectItem());
             }
         }
 
         ExpectKeyword("FROM");
         string name = ExpectIdentifier("table name");
-        Condition? where = PeekKeyword("WHERE") ? ParseWhere() : null;
+        var joins = new List<JoinClause>();
+        while (PeekKeyword("JOIN") || PeekKeyword("INNER"))
+        {
+            joins.Add(ParseJoin());
+        }
+
+        Expr? where = PeekKeyword("WHERE") ? ParseWhere() : null;
+        var groupBy = new List<string>();
+        if (PeekKeyword("GROUP"))
+        {
+            Advance();
+            ExpectKeyword("BY");
+            groupBy = ParseColumnList();
+        }
+
+        var orderBy = new List<OrderTerm>();
+        if (PeekKeyword("ORDER"))
+        {
+            Advance();
+            ExpectKeyword("BY");
+            orderBy.Add(ParseOrderTerm());
+            while (PeekSymbol(","))
+            {
+                Advance();
+                orderBy.Add(ParseOrderTerm());
+            }
+        }
+
         int? limit = null;
         if (PeekKeyword("LIMIT"))
         {
@@ -167,7 +197,116 @@ public sealed class Parser
             limit = ParseInt("LIMIT count");
         }
 
-        return new SelectStatement(name, columns, where, limit);
+        return new SelectStatement(name, items, joins, where, groupBy, orderBy, limit);
+    }
+
+    private SelectItem ParseSelectItem()
+    {
+        if (Peek.Kind == TokenKind.Identifier && _tokens[_index + 1] is { Kind: TokenKind.Symbol, Text: "(" })
+        {
+            return ParseAggregate();
+        }
+
+        return new ColumnItem(ParseColumnName());
+    }
+
+    private AggregateItem ParseAggregate()
+    {
+        Token function = Advance();
+        AggregateKind kind = function.Text.ToUpperInvariant() switch
+        {
+            "COUNT" => AggregateKind.Count,
+            "SUM" => AggregateKind.Sum,
+            "MIN" => AggregateKind.Min,
+            "MAX" => AggregateKind.Max,
+            "AVG" => AggregateKind.Avg,
+            _ => throw new SqlSyntaxException($"'{function.Text}' is not an aggregate function", function.Position),
+        };
+        ExpectSymbol("(");
+        string? column = null;
+        if (PeekSymbol("*"))
+        {
+            if (kind != AggregateKind.Count)
+            {
+                throw Error("only COUNT accepts *");
+            }
+
+            Advance();
+        }
+        else
+        {
+            column = ParseColumnName();
+        }
+
+        ExpectSymbol(")");
+        return new AggregateItem(kind, column);
+    }
+
+    private JoinClause ParseJoin()
+    {
+        if (PeekKeyword("INNER"))
+        {
+            Advance();
+        }
+
+        ExpectKeyword("JOIN");
+        string table = ExpectIdentifier("table name");
+        ExpectKeyword("ON");
+        string left = ParseColumnName();
+        ExpectSymbol("=");
+        string right = ParseColumnName();
+        return new JoinClause(table, left, right);
+    }
+
+    private OrderTerm ParseOrderTerm()
+    {
+        string column = ParseColumnName();
+        bool descending = false;
+        if (PeekKeyword("DESC"))
+        {
+            Advance();
+            descending = true;
+        }
+        else if (PeekKeyword("ASC"))
+        {
+            Advance();
+        }
+
+        return new OrderTerm(column, descending);
+    }
+
+    private List<string> ParseColumnList()
+    {
+        var columns = new List<string> { ParseColumnName() };
+        while (PeekSymbol(","))
+        {
+            Advance();
+            columns.Add(ParseColumnName());
+        }
+
+        return columns;
+    }
+
+    private UpdateStatement ParseUpdate()
+    {
+        ExpectKeyword("UPDATE");
+        string table = ExpectIdentifier("table name");
+        ExpectKeyword("SET");
+        var assignments = new List<Assignment> { ParseAssignment() };
+        while (PeekSymbol(","))
+        {
+            Advance();
+            assignments.Add(ParseAssignment());
+        }
+
+        return new UpdateStatement(table, assignments, ParseWhere());
+    }
+
+    private Assignment ParseAssignment()
+    {
+        string column = ExpectIdentifier("column name");
+        ExpectSymbol("=");
+        return new Assignment(column, ParseLiteral());
     }
 
     private DeleteStatement ParseDelete()
@@ -178,13 +317,64 @@ public sealed class Parser
         return new DeleteStatement(name, ParseWhere());
     }
 
-    private Condition ParseWhere()
+    /// <summary>Parses <c>WHERE expr</c>. Used by UPDATE and DELETE, which both require a filter.</summary>
+    private Expr ParseWhere()
     {
         ExpectKeyword("WHERE");
-        string column = ExpectIdentifier("column name");
+        return ParseOr();
+    }
+
+    private Expr ParseOr()
+    {
+        Expr left = ParseAnd();
+        while (PeekKeyword("OR"))
+        {
+            Advance();
+            left = new OrExpr(left, ParseAnd());
+        }
+
+        return left;
+    }
+
+    private Expr ParseAnd()
+    {
+        Expr left = ParsePrimary();
+        while (PeekKeyword("AND"))
+        {
+            Advance();
+            left = new AndExpr(left, ParsePrimary());
+        }
+
+        return left;
+    }
+
+    private Expr ParsePrimary()
+    {
+        if (PeekSymbol("("))
+        {
+            Advance();
+            Expr inner = ParseOr();
+            ExpectSymbol(")");
+            return inner;
+        }
+
+        string column = ParseColumnName();
         CompareOp op = ParseOperator();
         object value = ParseLiteral();
-        return new Condition(column, op, value);
+        return new ComparisonExpr(new Condition(column, op, value));
+    }
+
+    /// <summary>A column name, or <c>table.column</c>.</summary>
+    private string ParseColumnName()
+    {
+        string first = ExpectIdentifier("column name");
+        if (!PeekSymbol("."))
+        {
+            return first;
+        }
+
+        Advance();
+        return first + "." + ExpectIdentifier("column name");
     }
 
     private CompareOp ParseOperator()

@@ -1,23 +1,22 @@
 using MiniDb.Api;
 using MiniDb.Catalog;
-using MiniDb.Index;
 using MiniDb.Records;
 
 namespace MiniDb.Query;
 
 /// <summary>
-/// Runs one parsed statement against a database. Chooses access paths through <see cref="Planner"/>. Rows are
-/// filtered as <see cref="RowView"/>s: a comparison reads only its own column, and values are boxed only for output.
+/// Runs one parsed statement against a database. SELECT runs under the shared lock and is answered by
+/// <see cref="SelectExecutor"/>. Every other statement runs in a write transaction, and a statement that fails
+/// halfway rolls back all of its changes.
 /// </summary>
 internal static class SqlEngine
 {
-    /// <summary>SELECT runs under the shared lock; every other statement runs in a write transaction.</summary>
     public static QueryResult Execute(MiniDatabase db, string sql)
     {
         Statement statement = Parser.Parse(sql);
         if (statement is SelectStatement select)
         {
-            return db.ReadLocked(() => Select(db, select));
+            return db.ReadLocked(() => SelectExecutor.Run(db, select));
         }
 
         return db.InWriteTransaction(() => statement switch
@@ -25,6 +24,7 @@ internal static class SqlEngine
             CreateTableStatement create => CreateTable(db, create),
             CreateIndexStatement createIndex => CreateIndex(db, createIndex),
             InsertStatement insert => Insert(db, insert),
+            UpdateStatement update => UpdateExecutor.Run(db, update),
             DeleteStatement delete => Delete(db, delete),
             _ => throw new InvalidOperationException("Unknown statement."),
         });
@@ -62,124 +62,31 @@ internal static class SqlEngine
         return QueryResult.Affected(1);
     }
 
-    private static QueryResult Select(MiniDatabase db, SelectStatement statement)
-    {
-        TableInfo table = Load(db, statement.Table);
-        if (statement.Where is { } where)
-        {
-            ColumnIndex(table.Schema, where.Column);
-        }
-
-        List<string> names = statement.Columns?.ToList() ?? table.Schema.Columns.Select(c => c.Name).ToList();
-        int[] indexes = names.Select(name => ColumnIndex(table.Schema, name)).ToArray();
-        int limit = statement.Limit ?? int.MaxValue;
-        AccessPlan plan = ChoosePlan(db, table, statement.Where);
-        List<object?[]> rows;
-        if (plan is IndexRangePlan index && names.All(n => n == table.Schema.PrimaryKey.Name || n == index.Column))
-        {
-            // Covered by the index: each entry already holds the indexed value and the primary key.
-            rows = IndexOnlyRows(db, table, index, names).Take(limit).ToList();
-        }
-        else
-        {
-            rows = FilterRows(db, table, statement.Where, plan)
-                .Take(limit)
-                .Select(view => indexes.Select(i => view[i]).ToArray())
-                .ToList();
-        }
-
-        return new QueryResult(names, rows, 0);
-    }
-
     private static QueryResult Delete(MiniDatabase db, DeleteStatement statement)
     {
         TableInfo table = Load(db, statement.Table);
-        ColumnIndex(table.Schema, statement.Where.Column);
-        int deleted = db.InWriteTransaction(() =>
-        {
-            // Materialize the matches first so the heap is not changed while it is being read.
-            List<long> keys = FilterRows(db, table, statement.Where, ChoosePlan(db, table, statement.Where))
-                .Select(view => view.GetInt64(table.Schema.PrimaryKeyIndex))
-                .ToList();
-            return keys.Count(key => RowStore.Delete(db.Pool, table, key));
-        });
-        return QueryResult.Affected(deleted);
-    }
-
-    /// <summary>Largest number of index entries a secondary index may return and still be used.</summary>
-    private const int SelectivityLimit = 1024;
-
-    /// <summary>The planner's choice, except that a secondary index is dropped when it would return too many rows.</summary>
-    private static AccessPlan ChoosePlan(MiniDatabase db, TableInfo table, Condition? where)
-    {
-        AccessPlan plan = Planner.Plan(table.Schema, where, table.SecondaryIndexRoots.Keys);
-        if (plan is IndexRangePlan index && !IsSelective(db, table, index, SelectivityLimit))
-        {
-            return new FullScanPlan();
-        }
-
-        return plan;
-    }
-
-    /// <summary>True when the index range holds at most <paramref name="limit"/> entries.</summary>
-    private static bool IsSelective(MiniDatabase db, TableInfo table, IndexRangePlan range, int limit)
-    {
-        var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
-        int count = 0;
-        foreach (TreeKey _ in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)).Select(entry => entry.Key))
-        {
-            if (++count > limit)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static IEnumerable<object?[]> IndexOnlyRows(MiniDatabase db, TableInfo table, IndexRangePlan range, IReadOnlyList<string> names)
-    {
-        var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
-        ColumnType indexedType = table.Schema.Columns[ColumnIndex(table.Schema, range.Column)].Type;
-        foreach ((TreeKey key, _) in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)))
-        {
-            var row = new object?[names.Count];
-            for (int i = 0; i < names.Count; i++)
-            {
-                row[i] = names[i] == range.Column
-                    ? (indexedType == ColumnType.Int32 ? (object)(int)key.Major : key.Major)
-                    : key.Minor;
-            }
-
-            yield return row;
-        }
-    }
-
-    private static IEnumerable<RowView> FilterRows(MiniDatabase db, TableInfo table, Condition? where, AccessPlan plan)
-    {
-        IEnumerable<RowView> rows = plan switch
-        {
-            PointLookupPlan point => Single(RowStore.GetView(db.Pool, table, point.Key)),
-            KeyRangePlan range => RangeRows(db, table, range),
-            IndexRangePlan index => IndexRows(db, table, index),
-            _ => RowStore.ScanRecords(db.Pool, table).Select(record => new RowView(table.Schema, record)),
-        };
-        if (where is not { } condition)
-        {
-            return rows;
-        }
-
-        return rows.Where(view => Matches(table.Schema, view, condition));
+        Func<RowView, bool> filter = Predicates.ForSingleTable(new ColumnScope(new[] { table }), statement.Where);
+        // Materialize the matches first so the tree is not changed while it is being read.
+        List<long> keys = AccessPaths.Rows(db, table, AccessPaths.ChoosePlan(db, table, statement.Where))
+            .Where(filter)
+            .Select(row => row.GetInt64(table.Schema.PrimaryKeyIndex))
+            .ToList();
+        return QueryResult.Affected(keys.Count(key => RowStore.Delete(db.Pool, table, key)));
     }
 
     private static QueryResult CreateIndex(MiniDatabase db, CreateIndexStatement statement)
     {
         TableInfo table = Load(db, statement.Table);
-        int column = ColumnIndex(table.Schema, statement.Column);
-        ColumnType type = table.Schema.Columns[column].Type;
-        if (type is not (ColumnType.Int32 or ColumnType.Int64))
+        int column = ColumnScope.IndexOf(table.Schema, statement.Column);
+        if (column < 0)
         {
-            throw new MiniDbException($"Column '{statement.Column}' cannot be indexed: only INT and BIGINT columns can be in this version.");
+            throw new MiniDbException($"Unknown column '{statement.Column}'.");
+        }
+
+        ColumnType type = table.Schema.Columns[column].Type;
+        if (type is not (ColumnType.Int32 or ColumnType.Int64 or ColumnType.String))
+        {
+            throw new MiniDbException($"Column '{statement.Column}' cannot be indexed: only INT, BIGINT and VARCHAR columns can be indexed.");
         }
 
         if (table.SecondaryIndexRoots.ContainsKey(statement.Column))
@@ -195,61 +102,8 @@ internal static class SqlEngine
         return QueryResult.Affected(0);
     }
 
-    private static IEnumerable<RowView> IndexRows(MiniDatabase db, TableInfo table, IndexRangePlan range)
-    {
-        var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
-        foreach ((TreeKey key, _) in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)))
-        {
-            RowView? view = RowStore.GetView(db.Pool, table, key.Minor);
-            if (view is not null)
-            {
-                yield return view.Value;
-            }
-        }
-    }
-
-    private static IEnumerable<RowView> RangeRows(MiniDatabase db, TableInfo table, KeyRangePlan range)
-    {
-        foreach ((_, byte[] record) in ClusteredTree.Open(db.Pool, table.PrimaryKeyRoot).Range(range.From, range.To))
-        {
-            yield return new RowView(table.Schema, record);
-        }
-    }
-
-    private static IEnumerable<RowView> Single(RowView? view) =>
-        view is null ? Array.Empty<RowView>() : new[] { view.Value };
-
-    private static bool Matches(TableSchema schema, RowView view, Condition condition)
-    {
-        int order = CompareColumn(schema, view, ColumnIndex(schema, condition.Column), condition.Value);
-        return condition.Op switch
-        {
-            CompareOp.Equal => order == 0,
-            CompareOp.Less => order < 0,
-            CompareOp.LessOrEqual => order <= 0,
-            CompareOp.Greater => order > 0,
-            CompareOp.GreaterOrEqual => order >= 0,
-            _ => false,
-        };
-    }
-
-    /// <summary>Compares one column with a literal, reading only that column. Numbers compare across integer and decimal types.</summary>
-    private static int CompareColumn(TableSchema schema, RowView view, int column, object literal) =>
-        (schema.Columns[column].Type, literal) switch
-        {
-            (ColumnType.Int32, long l) => ((long)view.GetInt32(column)).CompareTo(l),
-            (ColumnType.Int32, double d) => ((double)view.GetInt32(column)).CompareTo(d),
-            (ColumnType.Int64, long l) => view.GetInt64(column).CompareTo(l),
-            (ColumnType.Int64, double d) => ((double)view.GetInt64(column)).CompareTo(d),
-            (ColumnType.Double, long l) => view.GetDouble(column).CompareTo((double)l),
-            (ColumnType.Double, double d) => view.GetDouble(column).CompareTo(d),
-            (ColumnType.Bool, bool b) => view.GetBool(column).CompareTo(b),
-            (ColumnType.String, string s) => string.CompareOrdinal(view.GetString(column), s),
-            _ => throw new MiniDbException(
-                $"Cannot compare column '{schema.Columns[column].Name}' ({schema.Columns[column].Type}) with {Describe(literal)}."),
-        };
-
-    private static object Coerce(ColumnDefinition column, object literal) => (column.Type, literal) switch
+    /// <summary>Converts a literal to the column's type, or throws when they do not match.</summary>
+    internal static object Coerce(ColumnDefinition column, object literal) => (column.Type, literal) switch
     {
         (ColumnType.Int32, long value) when value is >= int.MinValue and <= int.MaxValue => (int)value,
         (ColumnType.Int64, long value) => value,
@@ -259,19 +113,6 @@ internal static class SqlEngine
         (ColumnType.String, string value) => value,
         _ => throw new MiniDbException($"Column '{column.Name}' expects {column.Type}, but got {Describe(literal)}."),
     };
-
-    private static int ColumnIndex(TableSchema schema, string name)
-    {
-        for (int i = 0; i < schema.Columns.Count; i++)
-        {
-            if (schema.Columns[i].Name == name)
-            {
-                return i;
-            }
-        }
-
-        throw new MiniDbException($"Unknown column '{name}'.");
-    }
 
     private static TableInfo Load(MiniDatabase db, string name) =>
         db.Catalog.Find(name) ?? throw new TableNotFoundException(name);

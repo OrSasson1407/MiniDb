@@ -13,7 +13,8 @@ public static class HeaderCodec
     private const int PageSizeOffset = 12;
     private const int PageCountOffset = 16;
     private const int CatalogRootOffset = 24;
-    private const int FreeListOffset = 32;
+    /// <summary>Offset of the first free page id. <see cref="Storage.FreePages"/> reads and writes it in place.</summary>
+    public const int FreeListOffset = 32;
     private const int ChecksumOffset = PageConstants.PageSize - sizeof(uint);
 
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("MINIDB01");

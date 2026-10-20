@@ -11,8 +11,8 @@ public class ParserTests
         var statement = Assert.IsType<SelectStatement>(Parser.Parse("SELECT id, name FROM users WHERE id >= 10 LIMIT 5"));
 
         Assert.Equal("users", statement.Table);
-        Assert.Equal(new[] { "id", "name" }, statement.Columns);
-        Assert.Equal(new Condition("id", CompareOp.GreaterOrEqual, 10L), statement.Where);
+        Assert.Equal(new SelectItem[] { new ColumnItem("id"), new ColumnItem("name") }, statement.Items);
+        Assert.Equal(new ComparisonExpr(new Condition("id", CompareOp.GreaterOrEqual, 10L)), statement.Where);
         Assert.Equal(5, statement.Limit);
     }
 

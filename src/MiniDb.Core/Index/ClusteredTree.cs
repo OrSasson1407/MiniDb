@@ -102,6 +102,27 @@ public sealed class ClusteredTree
         return true;
     }
 
+    /// <summary>
+    /// Replaces the record under an existing key. The record is overwritten in its leaf when it is not longer than the
+    /// old one; otherwise the key is deleted and inserted again, which may split the leaf.
+    /// </summary>
+    public void Replace(long key, byte[] record)
+    {
+        int cellSize = KeyBytes + record.Length;
+        if (cellSize > SlottedPage.MaxRecordSize)
+        {
+            throw new RecordTooLargeException(cellSize);
+        }
+
+        if (TryOverwrite(key, BuildCell(key, record)))
+        {
+            return;
+        }
+
+        Delete(key);
+        Insert(key, record);
+    }
+
     /// <summary>Records with <paramref name="from"/> &lt;= key &lt;= <paramref name="to"/>, in key order.</summary>
     public IEnumerable<(long Key, byte[] Record)> Range(long from, long to)
     {
@@ -295,6 +316,22 @@ public sealed class ClusteredTree
 
     /// <summary>Descends to the leaf for <paramref name="key"/> and returns it still pinned.</summary>
     private PinnedPage FindLeafPinned(long key) => FindLeafPinned(_pool, RootPage, key);
+
+    /// <summary>Overwrites the cell of an existing key when the new cell is no longer than the old one.</summary>
+    private bool TryOverwrite(long key, byte[] cell)
+    {
+        using PinnedPage page = FindLeafPinned(key);
+        SlottedPage leaf = SlottedPage.Open(page.Data);
+        int index = LowerBound(leaf, key);
+        if (index >= leaf.SlotCount || KeyOf(leaf.Read(index)) != key || cell.Length > leaf.Read(index).Length)
+        {
+            return false;
+        }
+
+        leaf.Overwrite(index, cell);
+        page.MarkDirty();
+        return true;
+    }
 
     private static PinnedPage FindLeafPinned(IBufferPool pool, long rootPage, long key)
     {

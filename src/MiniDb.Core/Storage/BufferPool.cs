@@ -38,6 +38,7 @@ public sealed class BufferPool : IBufferPool
     private readonly Partition[] _partitions;
     private readonly HashSet<long> _trackedPages = new();
     private readonly List<PageFrame> _snapshotted = new();
+    private readonly List<long> _allocatedInTransaction = new();
     private bool _tracking;
 
     public BufferPool(IPageStore store, int capacity = 256)
@@ -122,7 +123,26 @@ public sealed class BufferPool : IBufferPool
         }
     }
 
-    public long AllocatePage() => _store.AllocatePage();
+    /// <summary>
+    /// Returns a zeroed page, reusing a free one when there is one, and otherwise appending to the store. A page appended
+    /// by the active transaction is remembered, so a rollback can return it to the free list.
+    /// </summary>
+    public long AllocatePage()
+    {
+        long reused = FreePages.Take(this);
+        if (reused != 0)
+        {
+            return reused;
+        }
+
+        long pageId = _store.AllocatePage();
+        if (_tracking)
+        {
+            _allocatedInTransaction.Add(pageId);
+        }
+
+        return pageId;
+    }
 
     /// <summary>Pages changed by the active transaction.</summary>
     public IReadOnlyCollection<long> TrackedPages => _trackedPages;
@@ -167,8 +187,13 @@ public sealed class BufferPool : IBufferPool
     }
 
     /// <summary>The transaction rolled back. Each page it changed goes back to its state before the transaction.</summary>
-    public void RollbackTracking()
+    /// <summary>
+    /// Restores every page the transaction changed. Returns the pages it appended to the store, which the caller should
+    /// put on the free list: they were never committed and nothing points to them any more.
+    /// </summary>
+    public IReadOnlyList<long> RollbackTracking()
     {
+        List<long> orphaned = _allocatedInTransaction.ToList();
         foreach (long pageId in _trackedPages)
         {
             if (PartitionOf(pageId).Cached.TryGetValue(pageId, out PageFrame? frame) && frame.HasSnapshot)
@@ -180,6 +205,7 @@ public sealed class BufferPool : IBufferPool
         }
 
         EndTracking();
+        return orphaned;
     }
 
     /// <summary>Returns a copy of the page's current bytes, loading it if needed.</summary>
@@ -346,6 +372,7 @@ public sealed class BufferPool : IBufferPool
 
         _snapshotted.Clear();
         _trackedPages.Clear();
+        _allocatedInTransaction.Clear();
         _tracking = false;
         ShrinkAfterTransaction();
     }

@@ -17,7 +17,7 @@ public class PlannerTests
     [Fact]
     public void EqualityOnPrimaryKey_UsesPointLookup()
     {
-        AccessPlan plan = Planner.Plan(Users, new Condition("id", CompareOp.Equal, 5L));
+        AccessPlan plan = Planner.Plan(Users, Cmp("id", CompareOp.Equal, 5L));
 
         Assert.Equal(new PointLookupPlan(5), plan);
     }
@@ -25,7 +25,7 @@ public class PlannerTests
     [Fact]
     public void RangeOnPrimaryKey_UsesKeyRange()
     {
-        AccessPlan plan = Planner.Plan(Users, new Condition("id", CompareOp.GreaterOrEqual, 5L));
+        AccessPlan plan = Planner.Plan(Users, Cmp("id", CompareOp.GreaterOrEqual, 5L));
 
         Assert.Equal(new KeyRangePlan(5, long.MaxValue), plan);
     }
@@ -33,7 +33,7 @@ public class PlannerTests
     [Fact]
     public void ConditionOnOtherColumn_FallsBackToFullScan()
     {
-        AccessPlan plan = Planner.Plan(Users, new Condition("name", CompareOp.Equal, "x"));
+        AccessPlan plan = Planner.Plan(Users, Cmp("name", CompareOp.Equal, "x"));
 
         Assert.IsType<FullScanPlan>(plan);
     }
@@ -56,8 +56,32 @@ public class PlannerTests
             },
             primaryKeyIndex: 0);
 
-        AccessPlan plan = Planner.Plan(schema, new Condition("n", CompareOp.Equal, 7L), new[] { "n" });
+        AccessPlan plan = Planner.Plan(schema, Cmp("n", CompareOp.Equal, 7L), new[] { "n" });
 
         Assert.Equal(new IndexRangePlan("n", 7, 7), plan);
     }
+
+    [Fact]
+    public void AndOfConditions_UsesTheCheapestRequiredPath()
+    {
+        Expr where = new AndExpr(Cmp("name", CompareOp.Equal, "x"), Cmp("id", CompareOp.Equal, 5L));
+
+        Assert.Equal(new PointLookupPlan(5), Planner.Plan(Users, where));
+    }
+
+    [Fact]
+    public void OrOfConditions_CannotNarrowTheRead_SoItScans()
+    {
+        Expr where = new OrExpr(Cmp("id", CompareOp.Equal, 5L), Cmp("id", CompareOp.Equal, 9L));
+
+        Assert.IsType<FullScanPlan>(Planner.Plan(Users, where));
+    }
+
+    [Fact]
+    public void QualifiedColumnOfThisTable_PlansLikeThePlainName()
+    {
+        Assert.Equal(new PointLookupPlan(5), Planner.Plan(Users, Cmp("users.id", CompareOp.Equal, 5L)));
+    }
+
+    private static ComparisonExpr Cmp(string column, CompareOp op, object value) => new(new Condition(column, op, value));
 }
