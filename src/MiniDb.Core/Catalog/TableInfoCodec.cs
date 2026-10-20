@@ -1,4 +1,5 @@
 using System.Text;
+using MiniDb.Database;
 using MiniDb.Records;
 
 namespace MiniDb.Catalog;
@@ -6,6 +7,9 @@ namespace MiniDb.Catalog;
 /// <summary>Serializes a <see cref="TableInfo"/> into one catalog record and back.</summary>
 internal static class TableInfoCodec
 {
+    /// <summary>A catalog record larger than this many columns cannot be a real table. Refusing it avoids huge allocations.</summary>
+    private const int MaxColumns = 1024;
+
     public static byte[] Encode(TableInfo table)
     {
         using var stream = new MemoryStream();
@@ -27,13 +31,35 @@ internal static class TableInfoCodec
         return stream.ToArray();
     }
 
+    /// <summary>
+    /// Reads a catalog record. A record that does not parse, or that describes an impossible table, is reported as a damaged
+    /// database. Any other exception would mean the file's bytes reached the decoder unchecked.
+    /// </summary>
     public static TableInfo Decode(ReadOnlySpan<byte> bytes)
+    {
+        try
+        {
+            return DecodeUnchecked(bytes);
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or IOException or FormatException or ArgumentException
+            or OverflowException or InvalidDataException or InvalidOperationException)
+        {
+            throw new InvalidDatabaseException($"A catalog entry is damaged: {ex.Message}");
+        }
+    }
+
+    private static TableInfo DecodeUnchecked(ReadOnlySpan<byte> bytes)
     {
         using var stream = new MemoryStream(bytes.ToArray());
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         TableSchema schema = ReadSchema(reader);
         long primaryKeyRoot = reader.ReadInt64();
         int indexCount = reader.ReadInt32();
+        if (indexCount < 0 || indexCount > schema.Columns.Count)
+        {
+            throw new InvalidDataException($"index count {indexCount} does not fit the {schema.Columns.Count} columns");
+        }
+
         var indexRoots = new Dictionary<string, long>(indexCount);
         for (int i = 0; i < indexCount; i++)
         {
@@ -63,11 +89,21 @@ internal static class TableInfoCodec
     {
         string name = reader.ReadString();
         int columnCount = reader.ReadInt32();
+        if (columnCount < 1 || columnCount > MaxColumns)
+        {
+            throw new InvalidDataException($"column count {columnCount} is out of range");
+        }
+
         var columns = new List<ColumnDefinition>(columnCount);
         for (int i = 0; i < columnCount; i++)
         {
             string columnName = reader.ReadString();
             var type = (ColumnType)reader.ReadByte();
+            if (!Enum.IsDefined(type))
+            {
+                throw new InvalidDataException($"column type {(byte)type} is unknown");
+            }
+
             int maxLength = reader.ReadInt32();
             columns.Add(new ColumnDefinition(columnName, type, maxLength));
         }

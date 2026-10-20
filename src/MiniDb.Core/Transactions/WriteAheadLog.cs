@@ -26,16 +26,45 @@ public sealed class WriteAheadLog : IDisposable
 
     public void Sync() => RandomAccess.FlushToDisk(_handle);
 
-    /// <summary>Reads every complete, valid record from the start. Stops silently at the first damaged one.</summary>
+    /// <summary>
+    /// Reads every complete, valid record from the start. A damaged record at the very end is a torn write and ends the
+    /// log. A damaged record with valid records after it throws <see cref="CorruptLogException"/>: skipping it would drop
+    /// committed transactions without a trace.
+    /// </summary>
     public IEnumerable<WalFrame> ReadAll()
     {
         var bytes = new byte[_length];
         RandomAccess.Read(_handle, bytes, 0);
-        using var stream = new MemoryStream(bytes, writable: false);
-        while (WalFrameCodec.TryDecode(stream, out WalFrame frame))
+        int offset = 0;
+        while (offset < bytes.Length)
         {
+            using var stream = new MemoryStream(bytes, offset, bytes.Length - offset, writable: false);
+            if (!WalFrameCodec.TryDecode(stream, out WalFrame frame))
+            {
+                break;
+            }
+
             yield return frame;
+            offset += (int)stream.Position;
         }
+
+        if (offset < bytes.Length && HasValidRecordAfter(bytes, offset))
+        {
+            throw new CorruptLogException(offset);
+        }
+    }
+
+    private static bool HasValidRecordAfter(byte[] bytes, int damagedAt)
+    {
+        for (int position = damagedAt + 1; position < bytes.Length; position++)
+        {
+            if (WalFrameCodec.StartsWithValidRecord(bytes.AsSpan(position)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Cuts the log back to <paramref name="length"/> bytes, discarding a partly written commit.</summary>

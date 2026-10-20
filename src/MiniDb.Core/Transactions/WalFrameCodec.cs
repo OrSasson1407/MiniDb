@@ -71,6 +71,32 @@ public static class WalFrameCodec
         return true;
     }
 
+    /// <summary>
+    /// True when <paramref name="bytes"/> starts with a complete record whose checksum matches. Allocates nothing,
+    /// so it can scan a damaged log for records that survived.
+    /// </summary>
+    public static bool StartsWithValidRecord(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length < HeaderSize)
+        {
+            return false;
+        }
+
+        int payloadLength = BinaryPrimitives.ReadInt32LittleEndian(bytes[17..]);
+        if (payloadLength < 0 || payloadLength > MaxPayloadBytes || !IsKnownType(bytes[8]))
+        {
+            return false;
+        }
+
+        int bodySize = HeaderSize + payloadLength;
+        if (bytes.Length < bodySize + ChecksumSize)
+        {
+            return false;
+        }
+
+        return Checksum.Compute(bytes[..bodySize]) == BinaryPrimitives.ReadUInt32LittleEndian(bytes[bodySize..]);
+    }
+
     private static void ValidatePayload(WalFrame frame)
     {
         if (frame.Type == WalFrameType.PageImage && frame.Payload.Length != PageConstants.PageSize)

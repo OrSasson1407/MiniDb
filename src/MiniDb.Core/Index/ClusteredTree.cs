@@ -79,10 +79,10 @@ public sealed class ClusteredTree
             throw new RecordTooLargeException(cellSize);
         }
 
-        TreeSplit? split = InsertInto(RootPage, key, BuildCell(key, record));
-        if (split is { } promoted)
+        IReadOnlyList<TreeSplit>? splits = InsertInto(RootPage, key, BuildCell(key, record));
+        if (splits is not null)
         {
-            RootPage = InternalTree.GrowRoot(_pool, RootPage, promoted);
+            RootPage = InternalTree.GrowRoot(_pool, RootPage, splits);
         }
     }
 
@@ -194,7 +194,7 @@ public sealed class ClusteredTree
         return low;
     }
 
-    private TreeSplit? InsertInto(long pageId, long key, byte[] cell)
+    private IReadOnlyList<TreeSplit>? InsertInto(long pageId, long key, byte[] cell)
     {
         using PinnedPage page = _pool.Pin(pageId);
         if (LeafNode.IsLeaf(page.Data))
@@ -203,11 +203,17 @@ public sealed class ClusteredTree
         }
 
         int childIndex = InternalNode.ChildIndexFor(page.Data, key);
-        TreeSplit? childSplit = InsertInto(InternalNode.ChildAt(page.Data, childIndex), key, cell);
-        return childSplit is { } split ? InternalTree.InsertSeparator(_pool, page, childIndex, split) : null;
+        IReadOnlyList<TreeSplit>? childSplits = InsertInto(InternalNode.ChildAt(page.Data, childIndex), key, cell);
+        if (childSplits is null)
+        {
+            return null;
+        }
+
+        TreeSplit? promoted = InternalTree.InsertSeparators(_pool, page, childIndex, childSplits);
+        return promoted is { } split ? new[] { split } : null;
     }
 
-    private TreeSplit? InsertIntoLeaf(PinnedPage page, long key, byte[] cell)
+    private IReadOnlyList<TreeSplit>? InsertIntoLeaf(PinnedPage page, long key, byte[] cell)
     {
         SlottedPage leaf = SlottedPage.Open(page.Data);
         int index = LowerBound(leaf, key);
@@ -225,7 +231,13 @@ public sealed class ClusteredTree
         return SplitLeaf(page, index, cell);
     }
 
-    private TreeSplit SplitLeaf(PinnedPage page, int index, byte[] cell)
+    /// <summary>
+    /// Splits a full leaf that received <paramref name="cell"/> at <paramref name="index"/>. Two pages usually suffice.
+    /// When no split point puts both halves on one page, the leaf is cut into three: the cells before the new one, the
+    /// new one alone, and the cells after it. The outer two fit because they are parts of a page that already held them,
+    /// and a single cell always fits on a page.
+    /// </summary>
+    private IReadOnlyList<TreeSplit> SplitLeaf(PinnedPage page, int index, byte[] cell)
     {
         List<byte[]> cells = ReadCells(page.Data);
         cells.Insert(index, cell);
@@ -234,6 +246,10 @@ public sealed class ClusteredTree
         // Ascending keys append to the rightmost leaf: keep the left leaf full rather than half-empty.
         bool appendingToRightmost = oldNext == 0 && index == cells.Count - 1;
         int split = ChooseSplit(cells, appendingToRightmost);
+        if (split < 0)
+        {
+            return SplitIntoThree(page, cells, index, oldNext);
+        }
 
         long newPageId = _pool.AllocatePage();
         using (PinnedPage right = _pool.Pin(newPageId))
@@ -242,10 +258,35 @@ public sealed class ClusteredTree
         }
 
         Rebuild(page, cells, 0, split, newPageId);
-        return new TreeSplit(KeyOf(cells[split]), newPageId);
+        return new[] { new TreeSplit(KeyOf(cells[split]), newPageId) };
     }
 
-    /// <summary>Index of the first cell that goes to the right page. Both halves must fit in one page.</summary>
+    /// <summary>Only reached for a new cell between two others, so both outer parts are non-empty.</summary>
+    private IReadOnlyList<TreeSplit> SplitIntoThree(PinnedPage page, List<byte[]> cells, int index, long oldNext)
+    {
+        long middleId = _pool.AllocatePage();
+        long rightId = _pool.AllocatePage();
+        using (PinnedPage right = _pool.Pin(rightId))
+        {
+            Rebuild(right, cells, index + 1, cells.Count - index - 1, oldNext);
+        }
+
+        using (PinnedPage middle = _pool.Pin(middleId))
+        {
+            Rebuild(middle, cells, index, 1, rightId);
+        }
+
+        Rebuild(page, cells, 0, index, middleId);
+        return new[]
+        {
+            new TreeSplit(KeyOf(cells[index]), middleId),
+            new TreeSplit(KeyOf(cells[index + 1]), rightId),
+        };
+    }
+
+    /// <summary>
+    /// Index of the first cell that goes to the right page, or -1 when no split point puts both halves on one page.
+    /// </summary>
     private static int ChooseSplit(List<byte[]> cells, bool appendingToRightmost)
     {
         if (appendingToRightmost)
@@ -271,11 +312,6 @@ public sealed class ClusteredTree
                     bestBalance = balance;
                 }
             }
-        }
-
-        if (best < 0)
-        {
-            throw new InvalidOperationException("The cells of a full leaf cannot be divided between two pages.");
         }
 
         return best;

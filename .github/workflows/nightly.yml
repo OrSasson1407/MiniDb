@@ -1,0 +1,45 @@
+name: Nightly reliability
+
+# Long-running checks that are too slow for every push: real process kills, a long soak test,
+# and high-iteration crash simulation and fuzzing. Results are uploaded as artifacts.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      MINIDB_CRASH_ITERATIONS: 3000
+      MINIDB_FUZZ_ITERATIONS: 20000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build
+        run: dotnet build MiniDb.sln -c Release
+
+      - name: In-process crash simulation and fuzzing (high iterations)
+        run: >
+          dotnet test tests/MiniDb.Tests/MiniDb.Tests.csproj -c Release --no-build
+          --filter "FullyQualifiedName~Reliability|FullyQualifiedName~ClusteredTreeModel"
+          --results-directory TestResults --logger "trx;LogFileName=reliability.trx"
+
+      - name: Real process kills (300)
+        run: dotnet tools/MiniDb.CrashHarness/bin/Release/net8.0/MiniDb.CrashHarness.dll kill 300 "$RUNNER_TEMP/kill"
+
+      - name: Soak (60 minutes of mixed workload)
+        run: dotnet tools/MiniDb.CrashHarness/bin/Release/net8.0/MiniDb.CrashHarness.dll soak 60 "$RUNNER_TEMP/soak"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reliability-results
+          path: TestResults/

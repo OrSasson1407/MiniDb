@@ -177,6 +177,22 @@ public sealed class MiniDatabase : IDisposable
         _store.Dispose();
     }
 
+    /// <summary>
+    /// Test hook: closes the files the way a killed process leaves them. Nothing is checkpointed or flushed. Writes already
+    /// made to the files stay, and everything still in the buffer pool is lost.
+    /// </summary>
+    internal void SimulateCrash()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _wal.Dispose();
+        _store.Dispose();
+    }
+
     internal BufferPool Pool => _pool;
 
     internal TableCatalog Catalog => _catalog;

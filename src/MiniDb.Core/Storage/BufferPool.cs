@@ -291,7 +291,16 @@ public sealed class BufferPool : IBufferPool
         Interlocked.Decrement(ref frame.PinCount);
     }
 
-    private Partition PartitionOf(long pageId) => _partitions[pageId % _partitions.Length];
+    private Partition PartitionOf(long pageId)
+    {
+        // A negative id can come from a damaged pointer. It has no partition, so it is reported as a bad page.
+        if (pageId < 0)
+        {
+            throw new PageOutOfRangeException(pageId);
+        }
+
+        return _partitions[pageId % _partitions.Length];
+    }
 
     /// <summary>
     /// Adds one pin to a frame if it is not being evicted, and checks that it still holds the page we asked for:

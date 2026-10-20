@@ -36,7 +36,7 @@ DELETE FROM users WHERE id = 1
 dotnet test tests/MiniDb.Tests
 ```
 
-162 בדיקות: שכבה לשכבה, כולל בדיקת fuzz של ה-B+ tree מול `SortedDictionary`, בדיקות התאוששות מקריסה ו-torn tail, בדיקות checksum, בדיקות SQL מקצה לקצה, ובדיקות על נתונים גדולים מהמאגר.
+177 בדיקות: שכבה לשכבה, כולל בדיקת fuzz של ה-B+ tree מול `SortedDictionary`, בדיקות התאוששות מקריסה ו-torn tail, בדיקות checksum, בדיקות SQL מקצה לקצה, ובדיקות על נתונים גדולים מהמאגר. בדיקות אמינות (קריסות, fuzzing, שחיתות): [docs/reliability.md](docs/reliability.md).
 
 ## השוואה למסדי נתונים אחרים
 
