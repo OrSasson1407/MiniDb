@@ -116,4 +116,40 @@ public class SqlExecutionTests : IDisposable
 
         Assert.Throws<DuplicateKeyException>(() => db.Execute("INSERT INTO users VALUES (1, 'b')"));
     }
+
+    [Fact]
+    public void WhereOnNonKeyIntColumn_ReturnsOnlyMatchingRows()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.Execute("CREATE TABLE scores (id BIGINT PRIMARY KEY, n INT, label VARCHAR(10))");
+        for (int id = 1; id <= 6; id++)
+        {
+            db.Execute($"INSERT INTO scores VALUES ({id}, {id % 3}, 'r{id}')");
+        }
+
+        Assert.Equal(2, db.Execute("SELECT id FROM scores WHERE n = 2").Rows.Count);
+        Assert.Equal(4, db.Execute("SELECT id FROM scores WHERE n >= 1").Rows.Count);
+    }
+
+    [Fact]
+    public void WhereComparesIntegerColumnWithDecimalLiteral()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.Execute("CREATE TABLE scores (id BIGINT PRIMARY KEY, n INT)");
+        db.Execute("INSERT INTO scores VALUES (1, 2)");
+        db.Execute("INSERT INTO scores VALUES (2, 3)");
+
+        Assert.Single(db.Execute("SELECT id FROM scores WHERE n = 2.0").Rows);
+        Assert.Equal(2, db.Execute("SELECT id FROM scores WHERE n > 1.5").Rows.Count);
+    }
+
+    [Fact]
+    public void WhereWithMismatchedType_ThrowsMiniDbException()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.Execute("CREATE TABLE scores (id BIGINT PRIMARY KEY, n INT)");
+        db.Execute("INSERT INTO scores VALUES (1, 2)");
+
+        Assert.Throws<MiniDbException>(() => db.Execute("SELECT id FROM scores WHERE n = 'two'"));
+    }
 }

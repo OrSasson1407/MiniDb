@@ -5,7 +5,10 @@ using MiniDb.Records;
 
 namespace MiniDb.Query;
 
-/// <summary>Runs one parsed statement against a database. Chooses access paths through <see cref="Planner"/>.</summary>
+/// <summary>
+/// Runs one parsed statement against a database. Chooses access paths through <see cref="Planner"/>. Rows are
+/// filtered as <see cref="RowView"/>s: a comparison reads only its own column, and values are boxed only for output.
+/// </summary>
 internal static class SqlEngine
 {
     public static QueryResult Run(MiniDatabase db, string sql) => Parser.Parse(sql) switch
@@ -61,7 +64,7 @@ internal static class SqlEngine
         int[] indexes = names.Select(name => ColumnIndex(table.Schema, name)).ToArray();
         List<object?[]> rows = FilterRows(db, table, statement.Where)
             .Take(statement.Limit ?? int.MaxValue)
-            .Select(row => indexes.Select(i => row[i]).ToArray())
+            .Select(view => indexes.Select(i => view[i]).ToArray())
             .ToList();
         return new QueryResult(names, rows, 0);
     }
@@ -74,48 +77,48 @@ internal static class SqlEngine
         {
             // Materialize the matches first so the heap is not changed while it is being read.
             List<long> keys = FilterRows(db, table, statement.Where)
-                .Select(row => (long)row[table.Schema.PrimaryKeyIndex]!)
+                .Select(view => view.GetInt64(table.Schema.PrimaryKeyIndex))
                 .ToList();
             return keys.Count(key => RowStore.Delete(db.Pool, table, key));
         });
         return QueryResult.Affected(deleted);
     }
 
-    private static IEnumerable<object?[]> FilterRows(MiniDatabase db, TableInfo table, Condition? where)
+    private static IEnumerable<RowView> FilterRows(MiniDatabase db, TableInfo table, Condition? where)
     {
-        IEnumerable<object?[]> rows = Planner.Plan(table.Schema, where) switch
+        IEnumerable<RowView> rows = Planner.Plan(table.Schema, where) switch
         {
-            PointLookupPlan point => Single(RowStore.Get(db.Pool, table, point.Key)),
+            PointLookupPlan point => Single(RowStore.GetView(db.Pool, table, point.Key)),
             KeyRangePlan range => RangeRows(db, table, range),
-            _ => RowStore.Scan(db.Pool, table),
+            _ => RowStore.ScanRecords(db.Pool, table).Select(record => new RowView(table.Schema, record)),
         };
         if (where is not { } condition)
         {
             return rows;
         }
 
-        return rows.Where(row => Matches(table.Schema, row, condition));
+        return rows.Where(view => Matches(table.Schema, view, condition));
     }
 
-    private static IEnumerable<object?[]> RangeRows(MiniDatabase db, TableInfo table, KeyRangePlan range)
+    private static IEnumerable<RowView> RangeRows(MiniDatabase db, TableInfo table, KeyRangePlan range)
     {
         var tree = BPlusTree.Open(db.Pool, table.PrimaryKeyRoot);
         foreach ((long key, _) in tree.Range(range.From, range.To))
         {
-            object?[]? row = RowStore.Get(db.Pool, table, key);
-            if (row is not null)
+            RowView? view = RowStore.GetView(db.Pool, table, key);
+            if (view is not null)
             {
-                yield return row;
+                yield return view.Value;
             }
         }
     }
 
-    private static IEnumerable<object?[]> Single(object?[]? row) =>
-        row is null ? Array.Empty<object?[]>() : new[] { row };
+    private static IEnumerable<RowView> Single(RowView? view) =>
+        view is null ? Array.Empty<RowView>() : new[] { view.Value };
 
-    private static bool Matches(TableSchema schema, object?[] row, Condition condition)
+    private static bool Matches(TableSchema schema, RowView view, Condition condition)
     {
-        int order = CompareValues(row[ColumnIndex(schema, condition.Column)]!, condition.Value);
+        int order = CompareColumn(schema, view, ColumnIndex(schema, condition.Column), condition.Value);
         return condition.Op switch
         {
             CompareOp.Equal => order == 0,
@@ -127,30 +130,21 @@ internal static class SqlEngine
         };
     }
 
-    private static int CompareValues(object left, object right)
-    {
-        if (left is long a && right is long b)
+    /// <summary>Compares one column with a literal, reading only that column. Numbers compare across integer and decimal types.</summary>
+    private static int CompareColumn(TableSchema schema, RowView view, int column, object literal) =>
+        (schema.Columns[column].Type, literal) switch
         {
-            return a.CompareTo(b);
-        }
-
-        if (IsNumber(left) && IsNumber(right))
-        {
-            return ToDouble(left).CompareTo(ToDouble(right));
-        }
-
-        if (left is string s && right is string t)
-        {
-            return string.CompareOrdinal(s, t);
-        }
-
-        if (left is bool x && right is bool y)
-        {
-            return x.CompareTo(y);
-        }
-
-        throw new MiniDbException($"Cannot compare {Describe(left)} with {Describe(right)}.");
-    }
+            (ColumnType.Int32, long l) => ((long)view.GetInt32(column)).CompareTo(l),
+            (ColumnType.Int32, double d) => ((double)view.GetInt32(column)).CompareTo(d),
+            (ColumnType.Int64, long l) => view.GetInt64(column).CompareTo(l),
+            (ColumnType.Int64, double d) => ((double)view.GetInt64(column)).CompareTo(d),
+            (ColumnType.Double, long l) => view.GetDouble(column).CompareTo((double)l),
+            (ColumnType.Double, double d) => view.GetDouble(column).CompareTo(d),
+            (ColumnType.Bool, bool b) => view.GetBool(column).CompareTo(b),
+            (ColumnType.String, string s) => string.CompareOrdinal(view.GetString(column), s),
+            _ => throw new MiniDbException(
+                $"Cannot compare column '{schema.Columns[column].Name}' ({schema.Columns[column].Type}) with {Describe(literal)}."),
+        };
 
     private static object Coerce(ColumnDefinition column, object literal) => (column.Type, literal) switch
     {
@@ -178,16 +172,6 @@ internal static class SqlEngine
 
     private static TableInfo Load(MiniDatabase db, string name) =>
         db.Catalog.Find(name) ?? throw new TableNotFoundException(name);
-
-    private static bool IsNumber(object value) => value is int or long or double;
-
-    private static double ToDouble(object value) => value switch
-    {
-        int i => i,
-        long l => l,
-        double d => d,
-        _ => throw new InvalidOperationException("Not a number."),
-    };
 
     private static string Describe(object value) => value switch
     {
