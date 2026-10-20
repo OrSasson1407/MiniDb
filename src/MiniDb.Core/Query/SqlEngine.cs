@@ -128,9 +128,9 @@ internal static class SqlEngine
     private static IEnumerable<RowView> IndexRows(MiniDatabase db, TableInfo table, IndexRangePlan range)
     {
         var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
-        foreach ((TreeKey _, RowLocation location) in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)))
+        foreach ((TreeKey key, _) in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)))
         {
-            RowView? view = RowStore.ViewAt(db.Pool, table.Schema, location);
+            RowView? view = RowStore.GetView(db.Pool, table, key.Minor);
             if (view is not null)
             {
                 yield return view.Value;
@@ -140,14 +140,9 @@ internal static class SqlEngine
 
     private static IEnumerable<RowView> RangeRows(MiniDatabase db, TableInfo table, KeyRangePlan range)
     {
-        var tree = BPlusTree.Open(db.Pool, table.PrimaryKeyRoot);
-        foreach ((TreeKey key, _) in tree.Range(range.From, range.To))
+        foreach ((_, byte[] record) in ClusteredTree.Open(db.Pool, table.PrimaryKeyRoot).Range(range.From, range.To))
         {
-            RowView? view = RowStore.GetView(db.Pool, table, key.Major);
-            if (view is not null)
-            {
-                yield return view.Value;
-            }
+            yield return new RowView(table.Schema, record);
         }
     }
 

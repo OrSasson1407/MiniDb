@@ -43,18 +43,13 @@ public sealed class BPlusTree
     /// <summary>Adds a key. Throws <see cref="DuplicateKeyException"/> if the key already exists.</summary>
     public void Insert(TreeKey key, RowLocation location)
     {
-        Split? split = InsertInto(RootPage, key, location);
+        TreeSplit? split = InsertInto(RootPage, key, location);
         if (split is not { } promoted)
         {
             return;
         }
 
-        long newRoot = _pool.AllocatePage();
-        using PinnedPage page = _pool.Pin(newRoot);
-        InternalNode.Format(page.Data, RootPage);
-        InternalNode.InsertAt(page.Data, 0, promoted.Key, promoted.PageId);
-        page.MarkDirty();
-        RootPage = newRoot;
+        RootPage = InternalTree.GrowRoot(_pool, RootPage, promoted);
     }
 
     /// <summary>Removes a key. Returns false if it was not present.</summary>
@@ -103,8 +98,6 @@ public sealed class BPlusTree
         }
     }
 
-    private readonly record struct Split(TreeKey Key, long PageId);
-
     private long FindLeaf(TreeKey key)
     {
         long pageId = RootPage;
@@ -144,7 +137,7 @@ public sealed class BPlusTree
         return (LeafNode.ReadAll(page.Data), LeafNode.Next(page.Data));
     }
 
-    private Split? InsertInto(long pageId, TreeKey key, RowLocation location)
+    private TreeSplit? InsertInto(long pageId, TreeKey key, RowLocation location)
     {
         using PinnedPage page = _pool.Pin(pageId);
         if (LeafNode.IsLeaf(page.Data))
@@ -153,11 +146,11 @@ public sealed class BPlusTree
         }
 
         int childIndex = InternalNode.ChildIndexFor(page.Data, key);
-        Split? childSplit = InsertInto(InternalNode.ChildAt(page.Data, childIndex), key, location);
-        return childSplit is { } split ? InsertSeparator(page, childIndex, split) : null;
+        TreeSplit? childSplit = InsertInto(InternalNode.ChildAt(page.Data, childIndex), key, location);
+        return childSplit is { } split ? InternalTree.InsertSeparator(_pool, page, childIndex, split) : null;
     }
 
-    private Split? InsertIntoLeaf(PinnedPage page, TreeKey key, RowLocation location)
+    private TreeSplit? InsertIntoLeaf(PinnedPage page, TreeKey key, RowLocation location)
     {
         Span<byte> data = page.Data;
         int index = LeafNode.LowerBound(data, key);
@@ -176,7 +169,7 @@ public sealed class BPlusTree
         return SplitLeaf(page, key, location);
     }
 
-    private Split SplitLeaf(PinnedPage page, TreeKey key, RowLocation location)
+    private TreeSplit SplitLeaf(PinnedPage page, TreeKey key, RowLocation location)
     {
         List<LeafNode.Entry> entries = LeafNode.ReadAll(page.Data);
         int index = entries.Count(e => e.Key < key);
@@ -195,42 +188,6 @@ public sealed class BPlusTree
 
         LeafNode.WriteAll(page.Data, entries.GetRange(0, half), newPageId);
         page.MarkDirty();
-        return new Split(entries[half].Key, newPageId);
-    }
-
-    private Split? InsertSeparator(PinnedPage page, int childIndex, Split child)
-    {
-        Span<byte> data = page.Data;
-        if (InternalNode.KeyCount(data) < InternalNode.Capacity)
-        {
-            InternalNode.InsertAt(data, childIndex, child.Key, child.PageId);
-            page.MarkDirty();
-            return null;
-        }
-
-        return SplitInternal(page, childIndex, child);
-    }
-
-    private Split SplitInternal(PinnedPage page, int childIndex, Split child)
-    {
-        (List<TreeKey> keys, List<long> children) = InternalNode.ReadAll(page.Data);
-        keys.Insert(childIndex, child.Key);
-        children.Insert(childIndex + 1, child.PageId);
-
-        int middle = keys.Count / 2;
-        TreeKey promoted = keys[middle];
-        long newPageId = _pool.AllocatePage();
-        using (PinnedPage right = _pool.Pin(newPageId))
-        {
-            InternalNode.WriteAll(
-                right.Data,
-                keys.GetRange(middle + 1, keys.Count - middle - 1),
-                children.GetRange(middle + 1, children.Count - middle - 1));
-            right.MarkDirty();
-        }
-
-        InternalNode.WriteAll(page.Data, keys.GetRange(0, middle), children.GetRange(0, middle + 1));
-        page.MarkDirty();
-        return new Split(promoted, newPageId);
+        return new TreeSplit(entries[half].Key, newPageId);
     }
 }

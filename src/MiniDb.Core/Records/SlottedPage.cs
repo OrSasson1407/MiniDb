@@ -71,6 +71,69 @@ public readonly ref struct SlottedPage
         return slot;
     }
 
+    /// <summary>Largest record this page could take if its holes were compacted first.</summary>
+    public int ReclaimableSpace
+    {
+        get
+        {
+            int live = 0;
+            for (int i = 0; i < SlotCount; i++)
+            {
+                (_, int length) = ReadSlot(i);
+                live += length;
+            }
+
+            return PageConstants.UsableSize - HeaderSize - SlotCount * SlotSize - live - SlotSize;
+        }
+    }
+
+    /// <summary>
+    /// Inserts a record as slot <paramref name="index"/>, moving later slots up so the slot order is kept.
+    /// Returns false when the record does not fit, even after compaction.
+    /// </summary>
+    public bool InsertAt(int index, ReadOnlySpan<byte> record)
+    {
+        if (record.IsEmpty)
+        {
+            throw new ArgumentException("A record cannot be empty.", nameof(record));
+        }
+
+        if (index < 0 || index > SlotCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        if (record.Length > FreeSpace)
+        {
+            if (record.Length > ReclaimableSpace)
+            {
+                return false;
+            }
+
+            Compact();
+        }
+
+        int count = SlotCount;
+        int shift = HeaderSize + index * SlotSize;
+        _page.Slice(shift, (count - index) * SlotSize).CopyTo(_page[(shift + SlotSize)..]);
+        int offset = ReadFreeOffset() - record.Length;
+        record.CopyTo(_page[offset..]);
+        WriteSlot(index, offset, record.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[FreeOffset..], (ushort)offset);
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[SlotCountOffset..], (ushort)(count + 1));
+        return true;
+    }
+
+    /// <summary>Removes slot <paramref name="index"/>; later slots move down. The record bytes stay until compaction.</summary>
+    public void RemoveAt(int index)
+    {
+        CheckSlot(index);
+        int count = SlotCount;
+        int at = HeaderSize + index * SlotSize;
+        _page.Slice(at + SlotSize, (count - index - 1) * SlotSize).CopyTo(_page[at..]);
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[SlotCountOffset..], (ushort)(count - 1));
+    }
+
     /// <summary>Returns the record in <paramref name="slot"/>, or an empty span if it was deleted.</summary>
     public ReadOnlySpan<byte> Read(int slot)
     {
@@ -105,6 +168,33 @@ public readonly ref struct SlottedPage
 
         WriteSlot(slot, offset, 0);
         return true;
+    }
+
+    /// <summary>Moves the live records back to the end of the page, closing the holes that removed records left.</summary>
+    private void Compact()
+    {
+        int count = SlotCount;
+        var live = new byte[count][];
+        for (int i = 0; i < count; i++)
+        {
+            live[i] = Read(i).ToArray();
+        }
+
+        int free = PageConstants.UsableSize;
+        for (int i = 0; i < count; i++)
+        {
+            if (live[i].Length == 0)
+            {
+                WriteSlot(i, 0, 0);
+                continue;
+            }
+
+            free -= live[i].Length;
+            live[i].AsSpan().CopyTo(_page[free..]);
+            WriteSlot(i, free, live[i].Length);
+        }
+
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[FreeOffset..], (ushort)free);
     }
 
     private int ReadFreeOffset() => BinaryPrimitives.ReadUInt16LittleEndian(_page[FreeOffset..]);

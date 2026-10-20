@@ -92,15 +92,8 @@ public sealed class MiniDatabase : IDisposable
 
         InWriteTransaction(() =>
         {
-            long heap = _pool.AllocatePage();
-            using (PinnedPage page = _pool.Pin(heap))
-            {
-                SlottedPage.Format(page.Data, heap, PageType.Heap);
-                page.MarkDirty();
-            }
-
-            long primaryRoot = BPlusTree.Create(_pool).RootPage;
-            _catalog.Create(new TableInfo(schema, primaryRoot, new Dictionary<string, long>(), heap, heap));
+            long primaryRoot = ClusteredTree.Create(_pool).RootPage;
+            _catalog.Create(new TableInfo(schema, primaryRoot, new Dictionary<string, long>()));
             return true;
         });
     }
