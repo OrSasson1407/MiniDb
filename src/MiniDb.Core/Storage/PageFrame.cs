@@ -28,6 +28,9 @@ internal sealed class PageFrame
 
     public int PinCount { get; set; }
 
+    /// <summary>Lock of the partition that owns this frame. Set when the frame is created.</summary>
+    public object? Gate { get; set; }
+
     /// <summary>This frame's entry in the pool's LRU list.</summary>
     public LinkedListNode<PageFrame> Node { get; }
 }

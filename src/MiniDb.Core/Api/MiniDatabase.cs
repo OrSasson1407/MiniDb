@@ -20,7 +20,7 @@ public sealed class MiniDatabase : IDisposable
     private readonly BufferPool _pool;
     private readonly TransactionManager _manager;
     private readonly TableCatalog _catalog;
-    private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.SupportsRecursion);
+    private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.NoRecursion);
     private Transaction? _current;
     private bool _disposed;
 
@@ -184,6 +184,12 @@ public sealed class MiniDatabase : IDisposable
     /// <summary>Runs <paramref name="read"/> under the shared lock: other readers may run alongside it.</summary>
     internal T ReadLocked<T>(Func<T> read)
     {
+        // A thread that already holds the write lock (inside a transaction) reads what it has written.
+        if (_lock.IsWriteLockHeld)
+        {
+            return read();
+        }
+
         _lock.EnterReadLock();
         try
         {
@@ -198,7 +204,12 @@ public sealed class MiniDatabase : IDisposable
     /// <summary>Enumerates rows under the shared lock, which is held until the enumeration ends.</summary>
     internal IEnumerable<T> ReadLockedSequence<T>(Func<IEnumerable<T>> rows)
     {
-        _lock.EnterReadLock();
+        bool taken = !_lock.IsWriteLockHeld;
+        if (taken)
+        {
+            _lock.EnterReadLock();
+        }
+
         try
         {
             foreach (T row in rows())
@@ -208,7 +219,10 @@ public sealed class MiniDatabase : IDisposable
         }
         finally
         {
-            _lock.ExitReadLock();
+            if (taken)
+            {
+                _lock.ExitReadLock();
+            }
         }
     }
 

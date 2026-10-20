@@ -13,7 +13,7 @@ public sealed class TableCatalog
     private readonly long _rootPage;
 
     /// <summary>Definitions by name, loaded on the first lookup. Null when stale.</summary>
-    private Dictionary<string, TableInfo>? _byName;
+    private volatile Dictionary<string, TableInfo>? _byName;
     private readonly object _cacheLock = new();
 
     public TableCatalog(IBufferPool pool, long rootPage)
@@ -70,10 +70,15 @@ public sealed class TableCatalog
 
     public TableInfo? Find(string name)
     {
+        Dictionary<string, TableInfo> byName = _byName ?? BuildIndex();
+        return byName.GetValueOrDefault(name);
+    }
+
+    private Dictionary<string, TableInfo> BuildIndex()
+    {
         lock (_cacheLock)
         {
-            _byName ??= All().ToDictionary(t => t.Schema.Name, StringComparer.Ordinal);
-            return _byName.GetValueOrDefault(name);
+            return _byName ??= All().ToDictionary(t => t.Schema.Name, StringComparer.Ordinal);
         }
     }
 
