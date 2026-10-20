@@ -28,8 +28,14 @@ internal sealed class PageFrame
 
     public int PinCount;
 
-    /// <summary>Pins since the page was loaded. Used to update the LRU list only on some of them.</summary>
+    /// <summary>Pins since the page was loaded. Counted without synchronization, so it is only approximate.</summary>
     public int Hits;
+
+    /// <summary>
+    /// A page that is pinned so often that it stays in memory for good (the root and upper levels of a tree).
+    /// Pinning it takes no atomic operation, so many threads can read it without contending. It is not in the LRU list.
+    /// </summary>
+    public bool Sticky;
 
     /// <summary>Lock of the partition that owns this frame. Set when the frame is created.</summary>
     public object? Gate { get; set; }

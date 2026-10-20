@@ -16,6 +16,12 @@ public sealed class BufferPool : IBufferPool
     private const int MinFramesPerPartition = 64;
     private const int MaxPartitions = 16;
 
+    /// <summary>A page pinned this many times becomes sticky (see <see cref="PageFrame.Sticky"/>).</summary>
+    private const int StickyHits = 128;
+
+    /// <summary>The LRU list is updated, and stickiness checked, once per this many pins of a page.</summary>
+    private const int TouchInterval = 16;
+
     /// <summary>A frame whose pin count is this value is being evicted or was freed; nobody may pin it.</summary>
     private const int Claimed = -1;
 
@@ -51,23 +57,59 @@ public sealed class BufferPool : IBufferPool
     public PinnedPage Pin(long pageId, bool sequential)
     {
         Partition partition = PartitionOf(pageId);
-        if (partition.Cached.TryGetValue(pageId, out PageFrame? hit) && TryPin(hit, pageId))
+        if (partition.Cached.TryGetValue(pageId, out PageFrame? hit))
         {
-            if (!sequential && (Interlocked.Increment(ref hit.Hits) & 3) == 0)
+            if (Volatile.Read(ref hit.Sticky) && hit.PageId == pageId)
             {
-                lock (partition.Gate)
-                {
-                    partition.Lru.Remove(hit.Node);
-                    partition.Lru.AddFirst(hit.Node);
-                }
+                return Track(hit, counted: false);
             }
 
-            return Track(hit);
+            if (TryPin(hit, pageId))
+            {
+                if (!sequential)
+                {
+                    RecordHit(partition, hit);
+                }
+
+                return Track(hit, counted: true);
+            }
         }
 
         lock (partition.Gate)
         {
             return PinSlow(partition, pageId, sequential);
+        }
+    }
+
+    /// <summary>
+    /// Counts a pin. Only one in <see cref="TouchInterval"/> takes the partition lock: it moves the page to the front of
+    /// the LRU list, or makes it sticky once it is pinned very often.
+    /// </summary>
+    private static void RecordHit(Partition partition, PageFrame frame)
+    {
+        int hits = ++frame.Hits;
+        if ((hits & (TouchInterval - 1)) != 0)
+        {
+            return;
+        }
+
+        lock (partition.Gate)
+        {
+            if (frame.Sticky || frame.Node.List is null)
+            {
+                return;
+            }
+
+            if (hits >= StickyHits && partition.StickyCount < partition.Capacity / 8)
+            {
+                partition.Lru.Remove(frame.Node);
+                frame.Sticky = true;
+                partition.StickyCount++;
+                return;
+            }
+
+            partition.Lru.Remove(frame.Node);
+            partition.Lru.AddFirst(frame.Node);
         }
     }
 
@@ -178,6 +220,13 @@ public sealed class BufferPool : IBufferPool
                 throw new InvalidOperationException($"Page {pageId} is pinned and cannot be discarded.");
             }
 
+            if (frame.Sticky)
+            {
+                frame.Sticky = false;
+                partition.StickyCount--;
+                partition.Lru.AddLast(frame.Node);
+            }
+
             Remove(partition, frame);
             frame.IsDirty = false;
             partition.FreeFrames.Push(frame);
@@ -242,6 +291,11 @@ public sealed class BufferPool : IBufferPool
         if (partition.Cached.TryGetValue(pageId, out PageFrame? cached))
         {
             frame = cached;
+            if (frame.Sticky)
+            {
+                return Track(frame, counted: false);
+            }
+
             if (!sequential)
             {
                 Touch(partition, frame);
@@ -256,11 +310,11 @@ public sealed class BufferPool : IBufferPool
             Interlocked.Increment(ref frame.PinCount);
         }
 
-        return Track(frame);
+        return Track(frame, counted: true);
     }
 
     /// <summary>Remembers the page as it was before the active transaction first pinned it, so rollback can restore it.</summary>
-    private PinnedPage Track(PageFrame frame)
+    private PinnedPage Track(PageFrame frame, bool counted)
     {
         if (_tracking && !frame.HasSnapshot)
         {
@@ -271,7 +325,7 @@ public sealed class BufferPool : IBufferPool
             _snapshotted.Add(frame);
         }
 
-        return new PinnedPage(this, frame);
+        return new PinnedPage(this, frame, counted);
     }
 
     private void EndTracking()
@@ -410,5 +464,8 @@ public sealed class BufferPool : IBufferPool
         public List<PageFrame> Frames { get; } = new();
 
         public Stack<PageFrame> FreeFrames { get; } = new();
+
+        /// <summary>Frames that are sticky. Guarded by the partition lock.</summary>
+        public int StickyCount { get; set; }
     }
 }

@@ -20,7 +20,7 @@ public sealed class MiniDatabase : IDisposable
     private readonly BufferPool _pool;
     private readonly TransactionManager _manager;
     private readonly TableCatalog _catalog;
-    private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.NoRecursion);
+    private readonly StripedReadWriteLock _lock = new();
     private Transaction? _current;
     private bool _disposed;
 
@@ -182,18 +182,21 @@ public sealed class MiniDatabase : IDisposable
     internal TableCatalog Catalog => _catalog;
 
     /// <summary>Runs <paramref name="read"/> under the shared lock: other readers may run alongside it.</summary>
-    internal T ReadLocked<T>(Func<T> read)
+    internal T ReadLocked<T>(Func<T> read) => ReadLocked(read, static run => run());
+
+    /// <summary>Same as the overload without state; a static read and a state value avoid allocating a closure per call.</summary>
+    internal T ReadLocked<TState, T>(TState state, Func<TState, T> read)
     {
         // A thread that already holds the write lock (inside a transaction) reads what it has written.
         if (_lock.IsWriteLockHeld)
         {
-            return read();
+            return read(state);
         }
 
         _lock.EnterReadLock();
         try
         {
-            return read();
+            return read(state);
         }
         finally
         {

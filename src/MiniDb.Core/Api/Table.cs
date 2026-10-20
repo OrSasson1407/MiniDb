@@ -22,7 +22,8 @@ public sealed class Table
         _db.InWriteTransaction((Table: this, Values: values), static state => state.Table.InsertRow(state.Values));
 
     /// <summary>The row with this primary key, or null.</summary>
-    public object?[]? Get(long id) => _db.ReadLocked(() => RowStore.Get(_db.Pool, Load(), id));
+    public object?[]? Get(long id) =>
+        _db.ReadLocked((Table: this, Id: id), static state => RowStore.Get(state.Table._db.Pool, state.Table.Load(), state.Id));
 
     /// <summary>Every row, optionally filtered. Rows come back in heap order, not key order.</summary>
     public IEnumerable<object?[]> Scan(Func<object?[], bool>? where = null)
@@ -32,7 +33,8 @@ public sealed class Table
     }
 
     /// <summary>The row with this primary key as a view that reads columns on demand, or null.</summary>
-    public RowView? GetView(long id) => _db.ReadLocked(() => RowStore.GetView(_db.Pool, Load(), id));
+    public RowView? GetView(long id) =>
+        _db.ReadLocked((Table: this, Id: id), static state => RowStore.GetView(state.Table._db.Pool, state.Table.Load(), state.Id));
 
     /// <summary>Every row as a view, optionally filtered. A filter reads only the columns it asks for.</summary>
     public IEnumerable<RowView> ScanViews(Func<RowView, bool>? where = null)

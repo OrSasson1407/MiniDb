@@ -8,11 +8,14 @@ public readonly struct PinnedPage : IDisposable
 {
     private readonly BufferPool _pool;
     private readonly PageFrame _frame;
+    private readonly bool _counted;
 
-    internal PinnedPage(BufferPool pool, PageFrame frame)
+    /// <param name="counted">False for a sticky page, which is never evicted and so has no pin to release.</param>
+    internal PinnedPage(BufferPool pool, PageFrame frame, bool counted)
     {
         _pool = pool;
         _frame = frame;
+        _counted = counted;
     }
 
     public long PageId => _frame.PageId;
@@ -23,5 +26,11 @@ public readonly struct PinnedPage : IDisposable
     /// <summary>Marks the page as changed, so it is written by the next FlushAll.</summary>
     public void MarkDirty() => _pool.MarkDirty(_frame);
 
-    public void Dispose() => _pool.Unpin(_frame);
+    public void Dispose()
+    {
+        if (_counted)
+        {
+            _pool.Unpin(_frame);
+        }
+    }
 }

@@ -6,7 +6,7 @@ namespace MiniDb.Benchmarks;
 
 /// <summary>Loads N rows into a fresh database, all in one transaction, with MiniDb and SQLite.</summary>
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 1, iterationCount: 3, invocationCount: 1)]
+[SimpleJob(warmupCount: 12, iterationCount: 8, invocationCount: 1)]
 public class InsertBenchmark
 {
     [Params(10_000)]

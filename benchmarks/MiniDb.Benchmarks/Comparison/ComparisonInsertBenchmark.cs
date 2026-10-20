@@ -7,7 +7,7 @@ namespace MiniDb.Benchmarks.Comparison;
 
 /// <summary>Batch load: all rows in one transaction (one InsertMany / InsertBulk call for document stores).</summary>
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 1, iterationCount: 3, invocationCount: 1)]
+[SimpleJob(warmupCount: 12, iterationCount: 8, invocationCount: 1)]
 public class ComparisonInsertBenchmark
 {
     [Params(10_000)]
