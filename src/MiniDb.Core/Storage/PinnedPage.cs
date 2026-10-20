@@ -1,11 +1,13 @@
 namespace MiniDb.Storage;
 
-/// <summary>A page held in the buffer pool. The page cannot be evicted until this object is disposed.</summary>
-public sealed class PinnedPage : IDisposable
+/// <summary>
+/// A page held in the buffer pool. The page cannot be evicted until this value is disposed, exactly once.
+/// It is a struct so that pinning a page does not allocate.
+/// </summary>
+public readonly struct PinnedPage : IDisposable
 {
     private readonly BufferPool _pool;
     private readonly PageFrame _frame;
-    private bool _released;
 
     internal PinnedPage(BufferPool pool, PageFrame frame)
     {
@@ -21,14 +23,5 @@ public sealed class PinnedPage : IDisposable
     /// <summary>Marks the page as changed, so it is written by the next FlushAll.</summary>
     public void MarkDirty() => _pool.MarkDirty(_frame);
 
-    public void Dispose()
-    {
-        if (_released)
-        {
-            return;
-        }
-
-        _released = true;
-        _pool.Unpin(_frame);
-    }
+    public void Dispose() => _pool.Unpin(_frame);
 }

@@ -20,21 +20,25 @@ internal static class RowStore
         var primary = ClusteredTree.Open(pool, table.PrimaryKeyRoot);
         primary.Insert(key, record);
 
-        if (table.SecondaryIndexRoots.Count == 0)
-        {
-            return table with { PrimaryKeyRoot = primary.RootPage };
-        }
-
-        var indexRoots = new Dictionary<string, long>(table.SecondaryIndexRoots);
+        Dictionary<string, long>? indexRoots = null;
         foreach ((string column, long root) in table.SecondaryIndexRoots)
         {
             int index = ColumnIndex(table.Schema, column);
             var secondary = BPlusTree.Open(pool, root);
             secondary.Insert(new TreeKey(IndexValue(values[index]!), key), default);
-            indexRoots[column] = secondary.RootPage;
+            if (secondary.RootPage != root)
+            {
+                indexRoots ??= new Dictionary<string, long>(table.SecondaryIndexRoots);
+                indexRoots[column] = secondary.RootPage;
+            }
         }
 
-        return table with { PrimaryKeyRoot = primary.RootPage, SecondaryIndexRoots = indexRoots };
+        if (indexRoots is null && primary.RootPage == table.PrimaryKeyRoot)
+        {
+            return table;
+        }
+
+        return table with { PrimaryKeyRoot = primary.RootPage, SecondaryIndexRoots = indexRoots ?? table.SecondaryIndexRoots };
     }
 
     public static object?[]? Get(BufferPool pool, TableInfo table, long key)

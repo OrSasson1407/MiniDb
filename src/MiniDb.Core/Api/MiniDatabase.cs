@@ -230,14 +230,17 @@ public sealed class MiniDatabase : IDisposable
     /// Runs <paramref name="action"/> in the open transaction, or in a new one that commits when it returns.
     /// Called while this thread already holds the write lock (inside a transaction), it joins that transaction.
     /// </summary>
-    internal T InWriteTransaction<T>(Func<T> action)
+    internal T InWriteTransaction<T>(Func<T> action) => InWriteTransaction(action, static run => run());
+
+    /// <summary>Same as the overload without state; a static action and a state value avoid allocating a closure per call.</summary>
+    internal T InWriteTransaction<TState, T>(TState state, Func<TState, T> action)
     {
         EnsureOpen();
         if (_lock.IsWriteLockHeld && _current is { IsFinished: false } open)
         {
             try
             {
-                return action();
+                return action(state);
             }
             catch
             {
@@ -252,7 +255,7 @@ public sealed class MiniDatabase : IDisposable
         {
             using Transaction transaction = _manager.Begin();
             _current = transaction;
-            T result = action();
+            T result = action(state);
             transaction.Commit();
             return result;
         }

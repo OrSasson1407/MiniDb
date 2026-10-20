@@ -18,20 +18,8 @@ public sealed class Table
     public string Name => _name;
 
     /// <summary>Adds a row. Throws <see cref="Index.DuplicateKeyException"/> if the primary key exists.</summary>
-    public void Insert(object?[] values)
-    {
-        _db.InWriteTransaction(() =>
-        {
-            TableInfo table = Load();
-            TableInfo updated = RowStore.Insert(_db.Pool, table, values);
-            if (updated.PrimaryKeyRoot != table.PrimaryKeyRoot || updated.HeapTail != table.HeapTail || !SameIndexRoots(table, updated))
-            {
-                _db.Catalog.Replace(updated);
-            }
-
-            return true;
-        });
-    }
+    public void Insert(object?[] values) =>
+        _db.InWriteTransaction((Table: this, Values: values), static state => state.Table.InsertRow(state.Values));
 
     /// <summary>The row with this primary key, or null.</summary>
     public object?[]? Get(long id) => _db.ReadLocked(() => RowStore.Get(_db.Pool, Load(), id));
@@ -60,9 +48,17 @@ public sealed class Table
     /// <summary>Removes the row with this primary key. Returns false if it does not exist.</summary>
     public bool Delete(long id) => _db.InWriteTransaction(() => RowStore.Delete(_db.Pool, Load(), id));
 
-    private static bool SameIndexRoots(TableInfo before, TableInfo after) =>
-        before.SecondaryIndexRoots.Count == after.SecondaryIndexRoots.Count
-        && before.SecondaryIndexRoots.All(pair => after.SecondaryIndexRoots.TryGetValue(pair.Key, out long root) && root == pair.Value);
+    private bool InsertRow(object?[] values)
+    {
+        TableInfo table = Load();
+        TableInfo updated = RowStore.Insert(_db.Pool, table, values);
+        if (!ReferenceEquals(updated, table))
+        {
+            _db.Catalog.Replace(updated);
+        }
+
+        return true;
+    }
 
     private TableInfo Load() => _db.Catalog.Find(_name) ?? throw new TableNotFoundException(_name);
 }
