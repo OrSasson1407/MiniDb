@@ -1,0 +1,119 @@
+using System.Buffers.Binary;
+using MiniDb.Storage;
+
+namespace MiniDb.Records;
+
+/// <summary>
+/// View over one page laid out as a slotted page. The slot array grows from the start of the page,
+/// record bytes grow from the end. Deleted records leave a hole that is not reclaimed (no compaction in v1).
+/// </summary>
+public readonly ref struct SlottedPage
+{
+    public const int HeaderSize = 25;
+    public const int SlotSize = 4;
+    public const int MaxRecordSize = PageConstants.PageSize - HeaderSize - SlotSize;
+
+    private const int TypeOffset = 0;
+    private const int PageIdOffset = 1;
+    private const int SlotCountOffset = 13;
+    private const int FreeOffset = 15;
+    private const int NextPageOffset = 17;
+
+    private readonly Span<byte> _page;
+
+    private SlottedPage(Span<byte> page)
+    {
+        _page = page;
+    }
+
+    /// <summary>Clears <paramref name="page"/> and writes an empty slotted-page header.</summary>
+    public static SlottedPage Format(Span<byte> page, long pageId, PageType type)
+    {
+        page.Clear();
+        page[TypeOffset] = (byte)type;
+        BinaryPrimitives.WriteInt64LittleEndian(page[PageIdOffset..], pageId);
+        BinaryPrimitives.WriteUInt16LittleEndian(page[FreeOffset..], PageConstants.PageSize);
+        return new SlottedPage(page);
+    }
+
+    public static SlottedPage Open(Span<byte> page) => new(page);
+
+    public int SlotCount => BinaryPrimitives.ReadUInt16LittleEndian(_page[SlotCountOffset..]);
+
+    public long NextPage
+    {
+        get => BinaryPrimitives.ReadInt64LittleEndian(_page[NextPageOffset..]);
+        set => BinaryPrimitives.WriteInt64LittleEndian(_page[NextPageOffset..], value);
+    }
+
+    /// <summary>Bytes available for a new record, counting the slot entry it needs.</summary>
+    public int FreeSpace => Math.Max(0, ReadFreeOffset() - (HeaderSize + SlotCount * SlotSize) - SlotSize);
+
+    /// <summary>Appends a record and returns its slot index, or -1 if it does not fit.</summary>
+    public int Insert(ReadOnlySpan<byte> record)
+    {
+        if (record.IsEmpty)
+        {
+            throw new ArgumentException("A record cannot be empty.", nameof(record));
+        }
+
+        if (record.Length > FreeSpace)
+        {
+            return -1;
+        }
+
+        int slot = SlotCount;
+        int offset = ReadFreeOffset() - record.Length;
+        record.CopyTo(_page[offset..]);
+        WriteSlot(slot, offset, record.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[FreeOffset..], (ushort)offset);
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[SlotCountOffset..], (ushort)(slot + 1));
+        return slot;
+    }
+
+    /// <summary>Returns the record in <paramref name="slot"/>, or an empty span if it was deleted.</summary>
+    public ReadOnlySpan<byte> Read(int slot)
+    {
+        CheckSlot(slot);
+        (int offset, int length) = ReadSlot(slot);
+        return length == 0 ? ReadOnlySpan<byte>.Empty : _page.Slice(offset, length);
+    }
+
+    /// <summary>Marks the record in <paramref name="slot"/> as deleted. Returns false if it was already deleted.</summary>
+    public bool Delete(int slot)
+    {
+        CheckSlot(slot);
+        (int offset, int length) = ReadSlot(slot);
+        if (length == 0)
+        {
+            return false;
+        }
+
+        WriteSlot(slot, offset, 0);
+        return true;
+    }
+
+    private int ReadFreeOffset() => BinaryPrimitives.ReadUInt16LittleEndian(_page[FreeOffset..]);
+
+    private (int Offset, int Length) ReadSlot(int slot)
+    {
+        int at = HeaderSize + slot * SlotSize;
+        return (BinaryPrimitives.ReadUInt16LittleEndian(_page[at..]),
+                BinaryPrimitives.ReadUInt16LittleEndian(_page[(at + 2)..]));
+    }
+
+    private void WriteSlot(int slot, int offset, int length)
+    {
+        int at = HeaderSize + slot * SlotSize;
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[at..], (ushort)offset);
+        BinaryPrimitives.WriteUInt16LittleEndian(_page[(at + 2)..], (ushort)length);
+    }
+
+    private void CheckSlot(int slot)
+    {
+        if (slot < 0 || slot >= SlotCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(slot), $"Slot {slot} does not exist.");
+        }
+    }
+}
