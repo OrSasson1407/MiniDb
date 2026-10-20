@@ -1,5 +1,6 @@
 using MiniDb.Database;
 using MiniDb.Storage;
+using MiniDb.Tests.Storage;
 using MiniDb.Transactions;
 
 namespace MiniDb.Tests.Transactions;
@@ -134,5 +135,68 @@ public class TransactionTests : IDisposable
 
         using (pool.Pin(3)) { }
         using (pool.Pin(4)) { }
+    }
+
+    [Fact]
+    public void CommittedWrite_StaysInPool_UntilCheckpoint()
+    {
+        var store = NewStoreWithPages(1);
+        var pool = new BufferPool(store);
+        using var wal = new WriteAheadLog(_walPath);
+        var manager = new TransactionManager(store, pool, wal);
+
+        using (Transaction tx = manager.Begin())
+        {
+            tx.WritePage(1, PageWith(0x55));
+            tx.Commit();
+        }
+
+        var beforeCheckpoint = new byte[PageConstants.PageSize];
+        store.ReadPage(1, beforeCheckpoint);
+        Assert.Equal(0, beforeCheckpoint[0]);
+    }
+
+    [Fact]
+    public void RollbackAfterLaterWrite_KeepsEarlierCommit()
+    {
+        var store = NewStoreWithPages(1);
+        var pool = new BufferPool(store);
+        using var wal = new WriteAheadLog(_walPath);
+        var manager = new TransactionManager(store, pool, wal);
+
+        using (Transaction first = manager.Begin())
+        {
+            first.WritePage(1, PageWith(0x11));
+            first.Commit();
+        }
+        using (Transaction second = manager.Begin())
+        {
+            second.WritePage(1, PageWith(0x22));
+            second.Rollback();
+        }
+
+        using Transaction reader = manager.Begin();
+        Assert.Equal(0x11, reader.ReadPage(1)[0]);
+    }
+
+    [Fact]
+    public void AutocommitWrites_ReachDataFileOnlyAtCheckpoint()
+    {
+        var counting = new CountingPageStore(NewStoreWithPages(4));
+        var pool = new BufferPool(counting);
+        using var wal = new WriteAheadLog(_walPath);
+        var manager = new TransactionManager(counting, pool, wal);
+
+        for (int i = 0; i < 50; i++)
+        {
+            using Transaction tx = manager.Begin();
+            tx.WritePage(1 + i % 3, PageWith((byte)i));
+            tx.Commit();
+        }
+
+        Assert.Equal(0, counting.WriteCount);
+
+        manager.Checkpoint();
+        Assert.True(counting.WriteCount > 0);
     }
 }

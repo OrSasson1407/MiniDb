@@ -14,6 +14,18 @@ internal sealed class PageFrame
 
     public bool IsDirty { get; set; }
 
+    /// <summary>Changed by the active transaction. Such a page is never evicted or written.</summary>
+    public bool TxDirty { get; set; }
+
+    /// <summary>Buffer that holds the page as it was before the active transaction first pinned it. Reused across transactions.</summary>
+    public byte[]? SnapshotBuffer { get; set; }
+
+    /// <summary>True while <see cref="SnapshotBuffer"/> holds a valid pre-transaction copy.</summary>
+    public bool HasSnapshot { get; set; }
+
+    /// <summary>Whether the page was dirty when <see cref="Snapshot"/> was taken.</summary>
+    public bool SnapshotWasDirty { get; set; }
+
     public int PinCount { get; set; }
 
     /// <summary>This frame's entry in the pool's LRU list.</summary>

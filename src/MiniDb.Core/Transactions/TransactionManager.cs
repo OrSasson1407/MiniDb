@@ -3,8 +3,8 @@ using MiniDb.Storage;
 namespace MiniDb.Transactions;
 
 /// <summary>
-/// Runs write transactions one at a time. Each transaction starts from a flushed pool, so the pool's
-/// dirty pages are exactly the active transaction's changes: rollback discards them and commit logs them.
+/// Runs write transactions one at a time. A commit makes the transaction's changes durable in the WAL; the
+/// changed pages reach the data file later, on eviction or at checkpoint. Rollback restores the changed pages.
 /// </summary>
 public sealed class TransactionManager
 {
@@ -15,6 +15,7 @@ public sealed class TransactionManager
     private readonly long _checkpointThresholdBytes;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private long _nextTransactionId = 1;
+    private bool _walUnsynced;
 
     /// <summary>Raised after every rollback, including the rollback of a failed commit.</summary>
     public event Action? RolledBack;
@@ -31,6 +32,7 @@ public sealed class TransactionManager
         _wal = wal;
         _fsyncOnCommit = fsyncOnCommit;
         _checkpointThresholdBytes = checkpointThresholdBytes;
+        _pool.BeforeWriteBack = EnsureWalDurable;
     }
 
     /// <summary>Starts a write transaction. Only one may be open at a time.</summary>
@@ -41,32 +43,20 @@ public sealed class TransactionManager
             throw new InvalidOperationException("Another transaction is open. Only one writer is allowed at a time.");
         }
 
-        try
-        {
-            // Committed pages from earlier transactions reach the data file here. The WAL keeps them until checkpoint.
-            _pool.FlushAll();
-            _pool.ClearTracking();
-        }
-        catch
-        {
-            _gate.Release();
-            throw;
-        }
-
+        _pool.BeginTracking();
         return new Transaction(this, _pool, _nextTransactionId++);
     }
 
     /// <summary>
-    /// Copies every changed page into the WAL, then a commit record, and makes them durable.
-    /// Once the commit record is durable, the changed pages are also written to the data file.
+    /// Copies every changed page into the WAL, then a commit record. With FsyncOnCommit the log is forced to disk
+    /// before this returns; otherwise it is forced before any page is written to the data file.
     /// </summary>
     internal void Commit(Transaction transaction)
     {
         try
         {
             WriteCommitRecords(transaction);
-            _pool.ClearTracking();
-            _pool.FlushAll();
+            _pool.CommitTracking();
         }
         finally
         {
@@ -92,9 +82,10 @@ public sealed class TransactionManager
             }
 
             _wal.Append(new WalFrame(transaction.Id, WalFrameType.Commit, 0, Array.Empty<byte>()));
+            _walUnsynced = true;
             if (_fsyncOnCommit)
             {
-                _wal.Sync();
+                EnsureWalDurable();
             }
         }
         catch
@@ -134,6 +125,7 @@ public sealed class TransactionManager
             _pool.FlushAll();
             _store.Sync();
             _wal.Truncate();
+            _walUnsynced = false;
         }
         finally
         {
@@ -141,14 +133,19 @@ public sealed class TransactionManager
         }
     }
 
+    /// <summary>Forces the log to disk if it has records that are not yet durable. Runs before any page write.</summary>
+    private void EnsureWalDurable()
+    {
+        if (_walUnsynced)
+        {
+            _wal.Sync();
+            _walUnsynced = false;
+        }
+    }
+
     private void DiscardChanges()
     {
-        foreach (long pageId in _pool.TrackedPages.ToArray())
-        {
-            _pool.Discard(pageId);
-        }
-
-        _pool.ClearTracking();
+        _pool.RollbackTracking();
         RolledBack?.Invoke();
     }
 }

@@ -37,6 +37,7 @@ public class BufferPoolTests
         long first = counting.AllocatePage();
         long second = counting.AllocatePage();
         using var pool = new BufferPool(counting, capacity: 1);
+        pool.BeginTracking();
 
         using (var page = pool.Pin(first))
         {

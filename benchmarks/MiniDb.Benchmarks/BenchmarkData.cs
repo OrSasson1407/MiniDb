@@ -11,17 +11,19 @@ internal static class BenchmarkData
     /// <summary>Large enough to hold a whole batch transaction, which the no-steal pool requires.</summary>
     private const int BatchPoolPages = 8192;
 
+    public static TableSchema UsersSchema() => new(
+        "users",
+        new[]
+        {
+            new ColumnDefinition("id", ColumnType.Int64),
+            new ColumnDefinition("name", ColumnType.String, maxLength: 40),
+        },
+        primaryKeyIndex: 0);
+
     public static MiniDatabase OpenFreshMiniDb(string path)
     {
         var db = MiniDatabase.Open(path, new DatabaseOptions { BufferPoolPages = BatchPoolPages });
-        db.CreateTable(new TableSchema(
-            "users",
-            new[]
-            {
-                new ColumnDefinition("id", ColumnType.Int64),
-                new ColumnDefinition("name", ColumnType.String, maxLength: 40),
-            },
-            primaryKeyIndex: 0));
+        db.CreateTable(UsersSchema());
         return db;
     }
 

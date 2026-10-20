@@ -7,8 +7,8 @@ public sealed class DatabaseOptions
     public int BufferPoolPages { get; init; } = 256;
 
     /// <summary>
-    /// When true, every commit is forced to disk before it returns. Turning it off is unsafe: after a power loss
-    /// the data file may be ahead of the log. Use it only to measure speed.
+    /// When true, every commit is forced to disk before it returns. When false, the most recent commits can be lost
+    /// after a power failure, but the database stays consistent: the log is always forced before any page is written.
     /// </summary>
     public bool FsyncOnCommit { get; init; } = true;
 
