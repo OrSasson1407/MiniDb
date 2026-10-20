@@ -34,6 +34,7 @@ public sealed class MiniDatabase : IDisposable
         _pool = pool;
         _manager = manager;
         _catalog = catalog;
+        _manager.RolledBack += _catalog.Invalidate;
     }
 
     /// <summary>Creates the file if it does not exist, otherwise recovers it from the WAL and opens it.</summary>

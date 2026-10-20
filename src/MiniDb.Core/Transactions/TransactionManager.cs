@@ -16,6 +16,9 @@ public sealed class TransactionManager
     private readonly SemaphoreSlim _gate = new(1, 1);
     private long _nextTransactionId = 1;
 
+    /// <summary>Raised after every rollback, including the rollback of a failed commit.</summary>
+    public event Action? RolledBack;
+
     public TransactionManager(
         IPageStore store,
         BufferPool pool,
@@ -146,5 +149,6 @@ public sealed class TransactionManager
         }
 
         _pool.ClearTracking();
+        RolledBack?.Invoke();
     }
 }

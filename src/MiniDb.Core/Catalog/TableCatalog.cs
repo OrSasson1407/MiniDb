@@ -12,6 +12,9 @@ public sealed class TableCatalog
     private readonly IBufferPool _pool;
     private readonly long _rootPage;
 
+    /// <summary>Definitions by name, loaded on the first lookup. Null when stale.</summary>
+    private Dictionary<string, TableInfo>? _byName;
+
     public TableCatalog(IBufferPool pool, long rootPage)
     {
         _pool = pool;
@@ -42,11 +45,13 @@ public sealed class TableCatalog
         }
 
         AppendRecord(record);
+        Invalidate();
     }
 
     /// <summary>Replaces the stored definition of the table with the same name.</summary>
     public void Replace(TableInfo table)
     {
+        Invalidate();
         long pageId = _rootPage;
         while (pageId != 0)
         {
@@ -62,7 +67,14 @@ public sealed class TableCatalog
         throw new InvalidOperationException($"Table '{table.Schema.Name}' is not in the catalog.");
     }
 
-    public TableInfo? Find(string name) => All().FirstOrDefault(t => t.Schema.Name == name);
+    public TableInfo? Find(string name)
+    {
+        _byName ??= All().ToDictionary(t => t.Schema.Name, StringComparer.Ordinal);
+        return _byName.GetValueOrDefault(name);
+    }
+
+    /// <summary>Forgets the cached definitions. Called when the catalog changes or a transaction rolls back.</summary>
+    public void Invalidate() => _byName = null;
 
     public IEnumerable<TableInfo> All()
     {

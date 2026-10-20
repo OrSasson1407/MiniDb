@@ -189,4 +189,17 @@ public class MiniDatabaseTests : IDisposable
 
         Assert.NotNull(db.GetTable("users"));
     }
+
+    [Fact]
+    public void RolledBackCreateTable_IsNotVisibleAfterwards()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        using (var tx = db.BeginTransaction())
+        {
+            db.CreateTable(UsersSchema());
+            tx.Rollback();
+        }
+
+        Assert.Throws<TableNotFoundException>(() => db.GetTable("users"));
+    }
 }
