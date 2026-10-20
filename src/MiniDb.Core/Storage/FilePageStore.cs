@@ -6,12 +6,14 @@ namespace MiniDb.Storage;
 public sealed class FilePageStore : IPageStore
 {
     private readonly SafeFileHandle _handle;
+    private readonly string _path;
     private long _pageCount;
 
     /// <param name="path">File to open.</param>
     /// <param name="create">True to create a new empty file (fails if it exists); false to open an existing one.</param>
     public FilePageStore(string path, bool create)
     {
+        _path = path;
         _handle = File.OpenHandle(
             path,
             create ? FileMode.CreateNew : FileMode.Open,
@@ -35,6 +37,7 @@ public sealed class FilePageStore : IPageStore
     public void WritePage(long pageId, ReadOnlySpan<byte> data)
     {
         CheckAllocated(pageId);
+        FileObserver.Raise(_path, FileEventKind.Write, _handle);
         RandomAccess.Write(_handle, data[..PageConstants.PageSize], pageId * PageConstants.PageSize);
     }
 
@@ -42,11 +45,16 @@ public sealed class FilePageStore : IPageStore
     {
         long pageId = _pageCount;
         _pageCount++;
+        FileObserver.Raise(_path, FileEventKind.Extend, _handle);
         RandomAccess.SetLength(_handle, _pageCount * PageConstants.PageSize);
         return pageId;
     }
 
-    public void Sync() => RandomAccess.FlushToDisk(_handle);
+    public void Sync()
+    {
+        FileObserver.Raise(_path, FileEventKind.Sync, _handle);
+        RandomAccess.FlushToDisk(_handle);
+    }
 
     public void Dispose() => _handle.Dispose();
 

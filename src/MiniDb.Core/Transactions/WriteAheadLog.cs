@@ -1,4 +1,5 @@
 using Microsoft.Win32.SafeHandles;
+using MiniDb.Storage;
 
 namespace MiniDb.Transactions;
 
@@ -6,10 +7,12 @@ namespace MiniDb.Transactions;
 public sealed class WriteAheadLog : IDisposable
 {
     private readonly SafeFileHandle _handle;
+    private readonly string _path;
     private long _length;
 
     public WriteAheadLog(string path)
     {
+        _path = path;
         _handle = File.OpenHandle(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         _length = RandomAccess.GetLength(_handle);
     }
@@ -17,6 +20,7 @@ public sealed class WriteAheadLog : IDisposable
     public void Append(WalFrame frame)
     {
         byte[] bytes = WalFrameCodec.Encode(frame);
+        FileObserver.Raise(_path, FileEventKind.Write, _handle);
         RandomAccess.Write(_handle, bytes, _length);
         _length += bytes.Length;
     }
@@ -24,7 +28,11 @@ public sealed class WriteAheadLog : IDisposable
     /// <summary>Current size of the log file in bytes.</summary>
     public long Length => _length;
 
-    public void Sync() => RandomAccess.FlushToDisk(_handle);
+    public void Sync()
+    {
+        FileObserver.Raise(_path, FileEventKind.Sync, _handle);
+        RandomAccess.FlushToDisk(_handle);
+    }
 
     /// <summary>
     /// Reads every complete, valid record from the start. A damaged record at the very end is a torn write and ends the
@@ -70,6 +78,7 @@ public sealed class WriteAheadLog : IDisposable
     /// <summary>Cuts the log back to <paramref name="length"/> bytes, discarding a partly written commit.</summary>
     public void TruncateTo(long length)
     {
+        FileObserver.Raise(_path, FileEventKind.Truncate, _handle);
         RandomAccess.SetLength(_handle, length);
         _length = length;
     }
