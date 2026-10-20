@@ -9,8 +9,9 @@ using MiniDb.Transactions;
 namespace MiniDb.Api;
 
 /// <summary>
-/// An open database file (<c>path</c>) with its write-ahead log (<c>path.wal</c>).
-/// Not thread-safe: use it from one thread at a time. Dispose it to checkpoint and close the files.
+/// An open database file (<c>path</c>) with its write-ahead log (<c>path.wal</c>). Many threads may read at the same
+/// time; one writer at a time holds the database exclusively, so readers wait for a writer to commit. An explicit
+/// transaction holds the write lock until it is committed or rolled back. Dispose it to checkpoint and close the files.
 /// </summary>
 public sealed class MiniDatabase : IDisposable
 {
@@ -19,6 +20,7 @@ public sealed class MiniDatabase : IDisposable
     private readonly BufferPool _pool;
     private readonly TransactionManager _manager;
     private readonly TableCatalog _catalog;
+    private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.SupportsRecursion);
     private Transaction? _current;
     private bool _disposed;
 
@@ -85,13 +87,13 @@ public sealed class MiniDatabase : IDisposable
     public void CreateTable(TableSchema schema)
     {
         EnsureOpen();
-        if (_catalog.Find(schema.Name) is not null)
-        {
-            throw new TableAlreadyExistsException(schema.Name);
-        }
-
         InWriteTransaction(() =>
         {
+            if (_catalog.Find(schema.Name) is not null)
+            {
+                throw new TableAlreadyExistsException(schema.Name);
+            }
+
             long primaryRoot = ClusteredTree.Create(_pool).RootPage;
             _catalog.Create(new TableInfo(schema, primaryRoot, new Dictionary<string, long>()));
             return true;
@@ -104,7 +106,7 @@ public sealed class MiniDatabase : IDisposable
         EnsureOpen();
         try
         {
-            return SqlEngine.Run(this, sql);
+            return SqlEngine.Execute(this, sql);
         }
         catch (ArgumentException ex)
         {
@@ -115,24 +117,37 @@ public sealed class MiniDatabase : IDisposable
     public Table GetTable(string name)
     {
         EnsureOpen();
-        if (_catalog.Find(name) is null)
+        return ReadLocked(() =>
         {
-            throw new TableNotFoundException(name);
-        }
+            if (_catalog.Find(name) is null)
+            {
+                throw new TableNotFoundException(name);
+            }
 
-        return new Table(this, name);
+            return new Table(this, name);
+        });
     }
 
     /// <summary>
-    /// Starts an explicit transaction. Table writes until it is committed or rolled back belong to it.
-    /// Dispose it to roll back if it is still open.
+    /// Starts an explicit transaction. Table writes until it is committed or rolled back belong to it, and no other
+    /// thread can write or read until then. Dispose it to roll back if it is still open.
     /// </summary>
     public Transaction BeginTransaction()
     {
         EnsureOpen();
-        Transaction transaction = _manager.Begin();
-        _current = transaction;
-        return transaction;
+        _lock.EnterWriteLock();
+        try
+        {
+            Transaction transaction = _manager.Begin();
+            transaction.Finished = _lock.ExitWriteLock;
+            _current = transaction;
+            return transaction;
+        }
+        catch
+        {
+            _lock.ExitWriteLock();
+            throw;
+        }
     }
 
     public void Dispose()
@@ -148,7 +163,16 @@ public sealed class MiniDatabase : IDisposable
             open.Rollback();
         }
 
-        _manager.Checkpoint();
+        _lock.EnterWriteLock();
+        try
+        {
+            _manager.Checkpoint();
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+
         _wal.Dispose();
         _store.Dispose();
     }
@@ -157,11 +181,45 @@ public sealed class MiniDatabase : IDisposable
 
     internal TableCatalog Catalog => _catalog;
 
-    /// <summary>Runs <paramref name="action"/> in the open transaction, or in a new one that commits when it returns.</summary>
+    /// <summary>Runs <paramref name="read"/> under the shared lock: other readers may run alongside it.</summary>
+    internal T ReadLocked<T>(Func<T> read)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            return read();
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>Enumerates rows under the shared lock, which is held until the enumeration ends.</summary>
+    internal IEnumerable<T> ReadLockedSequence<T>(Func<IEnumerable<T>> rows)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            foreach (T row in rows())
+            {
+                yield return row;
+            }
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> in the open transaction, or in a new one that commits when it returns.
+    /// Called while this thread already holds the write lock (inside a transaction), it joins that transaction.
+    /// </summary>
     internal T InWriteTransaction<T>(Func<T> action)
     {
         EnsureOpen();
-        if (_current is { IsFinished: false } open)
+        if (_lock.IsWriteLockHeld && _current is { IsFinished: false } open)
         {
             try
             {
@@ -175,11 +233,19 @@ public sealed class MiniDatabase : IDisposable
             }
         }
 
-        using Transaction transaction = _manager.Begin();
-        _current = transaction;
-        T result = action();
-        transaction.Commit();
-        return result;
+        _lock.EnterWriteLock();
+        try
+        {
+            using Transaction transaction = _manager.Begin();
+            _current = transaction;
+            T result = action();
+            transaction.Commit();
+            return result;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
     }
 
     private static void ValidateMagic(string path)

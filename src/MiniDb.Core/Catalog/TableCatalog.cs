@@ -14,6 +14,7 @@ public sealed class TableCatalog
 
     /// <summary>Definitions by name, loaded on the first lookup. Null when stale.</summary>
     private Dictionary<string, TableInfo>? _byName;
+    private readonly object _cacheLock = new();
 
     public TableCatalog(IBufferPool pool, long rootPage)
     {
@@ -69,12 +70,21 @@ public sealed class TableCatalog
 
     public TableInfo? Find(string name)
     {
-        _byName ??= All().ToDictionary(t => t.Schema.Name, StringComparer.Ordinal);
-        return _byName.GetValueOrDefault(name);
+        lock (_cacheLock)
+        {
+            _byName ??= All().ToDictionary(t => t.Schema.Name, StringComparer.Ordinal);
+            return _byName.GetValueOrDefault(name);
+        }
     }
 
     /// <summary>Forgets the cached definitions. Called when the catalog changes or a transaction rolls back.</summary>
-    public void Invalidate() => _byName = null;
+    public void Invalidate()
+    {
+        lock (_cacheLock)
+        {
+            _byName = null;
+        }
+    }
 
     public IEnumerable<TableInfo> All()
     {

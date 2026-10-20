@@ -34,23 +34,26 @@ public sealed class Table
     }
 
     /// <summary>The row with this primary key, or null.</summary>
-    public object?[]? Get(long id) => RowStore.Get(_db.Pool, Load(), id);
+    public object?[]? Get(long id) => _db.ReadLocked(() => RowStore.Get(_db.Pool, Load(), id));
 
     /// <summary>Every row, optionally filtered. Rows come back in heap order, not key order.</summary>
     public IEnumerable<object?[]> Scan(Func<object?[], bool>? where = null)
     {
-        IEnumerable<object?[]> rows = RowStore.Scan(_db.Pool, Load());
+        IEnumerable<object?[]> rows = _db.ReadLockedSequence(() => RowStore.Scan(_db.Pool, Load()));
         return where is null ? rows : rows.Where(where);
     }
 
     /// <summary>The row with this primary key as a view that reads columns on demand, or null.</summary>
-    public RowView? GetView(long id) => RowStore.GetView(_db.Pool, Load(), id);
+    public RowView? GetView(long id) => _db.ReadLocked(() => RowStore.GetView(_db.Pool, Load(), id));
 
     /// <summary>Every row as a view, optionally filtered. A filter reads only the columns it asks for.</summary>
     public IEnumerable<RowView> ScanViews(Func<RowView, bool>? where = null)
     {
-        TableInfo table = Load();
-        IEnumerable<RowView> views = RowStore.ScanRecords(_db.Pool, table).Select(record => new RowView(table.Schema, record));
+        IEnumerable<RowView> views = _db.ReadLockedSequence(() =>
+        {
+            TableInfo table = Load();
+            return RowStore.ScanRecords(_db.Pool, table).Select(record => new RowView(table.Schema, record));
+        });
         return where is null ? views : views.Where(where);
     }
 

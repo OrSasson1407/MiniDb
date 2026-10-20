@@ -11,15 +11,24 @@ namespace MiniDb.Query;
 /// </summary>
 internal static class SqlEngine
 {
-    public static QueryResult Run(MiniDatabase db, string sql) => Parser.Parse(sql) switch
+    /// <summary>SELECT runs under the shared lock; every other statement runs in a write transaction.</summary>
+    public static QueryResult Execute(MiniDatabase db, string sql)
     {
-        CreateTableStatement create => CreateTable(db, create),
-        CreateIndexStatement createIndex => CreateIndex(db, createIndex),
-        InsertStatement insert => Insert(db, insert),
-        SelectStatement select => Select(db, select),
-        DeleteStatement delete => Delete(db, delete),
-        _ => throw new InvalidOperationException("Unknown statement."),
-    };
+        Statement statement = Parser.Parse(sql);
+        if (statement is SelectStatement select)
+        {
+            return db.ReadLocked(() => Select(db, select));
+        }
+
+        return db.InWriteTransaction(() => statement switch
+        {
+            CreateTableStatement create => CreateTable(db, create),
+            CreateIndexStatement createIndex => CreateIndex(db, createIndex),
+            InsertStatement insert => Insert(db, insert),
+            DeleteStatement delete => Delete(db, delete),
+            _ => throw new InvalidOperationException("Unknown statement."),
+        });
+    }
 
     private static QueryResult CreateTable(MiniDatabase db, CreateTableStatement statement)
     {

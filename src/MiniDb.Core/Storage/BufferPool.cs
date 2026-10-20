@@ -15,6 +15,7 @@ public sealed class BufferPool : IBufferPool
     private readonly HashSet<long> _trackedPages = new();
     private readonly List<PageFrame> _snapshotted = new();
     private bool _tracking;
+    private readonly object _sync = new();
 
     public BufferPool(IPageStore store, int capacity = 256)
     {
@@ -34,6 +35,14 @@ public sealed class BufferPool : IBufferPool
     /// so one long scan cannot push out the pages that point lookups keep needing.
     /// </summary>
     public PinnedPage Pin(long pageId, bool sequential)
+    {
+        lock (_sync)
+        {
+            return PinCore(pageId, sequential);
+        }
+    }
+
+    private PinnedPage PinCore(long pageId, bool sequential)
     {
         PageFrame frame;
         if (_cached.TryGetValue(pageId, out PageFrame? cached))
@@ -173,9 +182,12 @@ public sealed class BufferPool : IBufferPool
 
     internal void Unpin(PageFrame frame)
     {
-        if (frame.PinCount > 0)
+        lock (_sync)
         {
-            frame.PinCount--;
+            if (frame.PinCount > 0)
+            {
+                frame.PinCount--;
+            }
         }
     }
 
@@ -202,9 +214,12 @@ public sealed class BufferPool : IBufferPool
     /// <summary>Loads a page without pinning it, so a later sequential Pin finds it in the cache.</summary>
     public void Prefetch(long pageId)
     {
-        if (!_cached.ContainsKey(pageId))
+        lock (_sync)
         {
-            LoadFrame(pageId, sequential: true);
+            if (!_cached.ContainsKey(pageId))
+            {
+                LoadFrame(pageId, sequential: true);
+            }
         }
     }
 

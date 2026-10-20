@@ -24,6 +24,9 @@ public sealed class Transaction : IDisposable
     /// <summary>True once the transaction has been committed or rolled back.</summary>
     public bool IsFinished => _finished;
 
+    /// <summary>Runs once when the transaction commits or rolls back. The database uses it to release its write lock.</summary>
+    internal Action? Finished { get; set; }
+
     public void WritePage(long pageId, ReadOnlySpan<byte> data)
     {
         EnsureActive();
@@ -43,14 +46,28 @@ public sealed class Transaction : IDisposable
     {
         EnsureActive();
         _finished = true;
-        _manager.Commit(this);
+        try
+        {
+            _manager.Commit(this);
+        }
+        finally
+        {
+            Finished?.Invoke();
+        }
     }
 
     public void Rollback()
     {
         EnsureActive();
         _finished = true;
-        _manager.Rollback(this);
+        try
+        {
+            _manager.Rollback(this);
+        }
+        finally
+        {
+            Finished?.Invoke();
+        }
     }
 
     public void Dispose()
