@@ -41,6 +41,9 @@ public class FilteredScanBenchmark
     public int MiniDbFilteredScanObjects() => _users.Scan(row => (int)row[2]! == 7).Count();
 
     [Benchmark]
+    public int MiniDbFilteredScanViews() => _users.ScanViews(view => view.GetInt32(2) == 7).Count();
+
+    [Benchmark]
     public int SqliteFilteredScan()
     {
         using SqliteCommand command = _sqlite.CreateCommand();

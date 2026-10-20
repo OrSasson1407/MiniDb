@@ -202,4 +202,36 @@ public class MiniDatabaseTests : IDisposable
 
         Assert.Throws<TableNotFoundException>(() => db.GetTable("users"));
     }
+
+    [Fact]
+    public void RowView_ReadsTypedColumns()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.CreateTable(UsersSchema());
+        Table users = db.GetTable("users");
+        users.Insert(User(5, "ann"));
+
+        RowView? view = users.GetView(5);
+
+        Assert.NotNull(view);
+        Assert.Equal(5L, view.Value.GetInt64(0));
+        Assert.Equal("ann", view.Value.GetString(1));
+        Assert.Equal(new object?[] { 5L, "ann" }, new[] { view.Value[0], view.Value[1] });
+    }
+
+    [Fact]
+    public void ScanViews_FiltersOnOneColumn()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.CreateTable(UsersSchema());
+        Table users = db.GetTable("users");
+        for (long id = 1; id <= 5; id++)
+        {
+            users.Insert(User(id, $"u{id}"));
+        }
+
+        int evens = users.ScanViews(view => view.GetInt64(0) % 2 == 0).Count();
+
+        Assert.Equal(2, evens);
+    }
 }

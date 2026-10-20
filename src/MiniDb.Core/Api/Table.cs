@@ -1,4 +1,5 @@
 using MiniDb.Catalog;
+using MiniDb.Records;
 
 namespace MiniDb.Api;
 
@@ -40,6 +41,17 @@ public sealed class Table
     {
         IEnumerable<object?[]> rows = RowStore.Scan(_db.Pool, Load());
         return where is null ? rows : rows.Where(where);
+    }
+
+    /// <summary>The row with this primary key as a view that reads columns on demand, or null.</summary>
+    public RowView? GetView(long id) => RowStore.GetView(_db.Pool, Load(), id);
+
+    /// <summary>Every row as a view, optionally filtered. A filter reads only the columns it asks for.</summary>
+    public IEnumerable<RowView> ScanViews(Func<RowView, bool>? where = null)
+    {
+        TableInfo table = Load();
+        IEnumerable<RowView> views = RowStore.ScanRecords(_db.Pool, table).Select(record => new RowView(table.Schema, record));
+        return where is null ? views : views.Where(where);
     }
 
     /// <summary>Removes the row with this primary key. Returns false if it does not exist.</summary>

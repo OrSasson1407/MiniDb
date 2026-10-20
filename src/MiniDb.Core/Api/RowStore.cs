@@ -70,6 +70,41 @@ internal static class RowStore
         }
     }
 
+    /// <summary>The row with this key as a view that owns a copy of its record, or null.</summary>
+    public static RowView? GetView(BufferPool pool, TableInfo table, long key)
+    {
+        RowLocation? location = BPlusTree.Open(pool, table.PrimaryKeyRoot).Find(key);
+        if (location is not { } found)
+        {
+            return null;
+        }
+
+        using PinnedPage page = pool.Pin(found.PageId);
+        byte[]? record = ReadLiveRecord(page.Data, found.Slot);
+        return record is null ? null : new RowView(table.Schema, record);
+    }
+
+    /// <summary>Copies of every live record, in heap order. Holds at most one page pinned.</summary>
+    public static IEnumerable<byte[]> ScanRecords(BufferPool pool, TableInfo table)
+    {
+        long pageId = table.HeapRoot;
+        while (pageId != 0)
+        {
+            using PinnedPage page = pool.Pin(pageId);
+            int slots = SlotCount(page.Data);
+            for (int slot = 0; slot < slots; slot++)
+            {
+                byte[]? record = ReadLiveRecord(page.Data, slot);
+                if (record is not null)
+                {
+                    yield return record;
+                }
+            }
+
+            pageId = NextPage(page.Data);
+        }
+    }
+
     private static byte[] EncodeRow(TableSchema schema, object?[] values)
     {
         var record = new byte[RecordCodec.EncodedSize(schema, values)];
@@ -109,6 +144,12 @@ internal static class RowStore
     private static int SlotCount(Span<byte> data) => SlottedPage.Open(data).SlotCount;
 
     private static long NextPage(Span<byte> data) => SlottedPage.Open(data).NextPage;
+
+    private static byte[]? ReadLiveRecord(Span<byte> data, int slot)
+    {
+        ReadOnlySpan<byte> bytes = SlottedPage.Open(data).Read(slot);
+        return bytes.IsEmpty ? null : bytes.ToArray();
+    }
 
     private static object?[]? ReadLiveSlot(Span<byte> data, TableSchema schema, int slot)
     {

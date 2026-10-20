@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using Microsoft.Data.Sqlite;
 using MiniDb.Api;
+using MiniDb.Records;
 
 namespace MiniDb.Benchmarks;
 
@@ -58,6 +59,18 @@ public class LookupBenchmark
         }
 
         return row;
+    }
+
+    [Benchmark(OperationsPerInvoke = LookupsPerInvoke)]
+    public RowView? MiniDbPointLookupView()
+    {
+        RowView? view = null;
+        foreach (long key in _keys)
+        {
+            view = _users.GetView(key);
+        }
+
+        return view;
     }
 
     [Benchmark(OperationsPerInvoke = LookupsPerInvoke)]
