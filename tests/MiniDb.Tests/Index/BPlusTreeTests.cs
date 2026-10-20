@@ -44,7 +44,7 @@ public class BPlusTreeTests
             Assert.Equal(key, tree.Find(key)!.Value.PageId);
         }
 
-        var keys = tree.Range(0, 999).Select(entry => entry.Key).ToList();
+        var keys = tree.Range(0, 999).Select(entry => entry.Key.Major).ToList();
         Assert.Equal(Enumerable.Range(0, 1000).Select(i => (long)i), keys);
     }
 
@@ -120,5 +120,35 @@ public class BPlusTreeTests
 
         pool.FlushAll();
         Assert.True(store.PageCount < 75, $"used {store.PageCount} pages");
+    }
+
+    [Fact]
+    public void CompositeKeys_WithTheSameMajor_AreAllReturnedByRange()
+    {
+        var pool = new BufferPool(NewStore());
+        var tree = BPlusTree.Create(pool);
+        tree.Insert(new TreeKey(5, 1), new RowLocation(1, 0));
+        tree.Insert(new TreeKey(5, 2), new RowLocation(2, 0));
+        tree.Insert(new TreeKey(3, 9), new RowLocation(3, 0));
+
+        var minors = tree.Range(new TreeKey(5, long.MinValue), new TreeKey(5, long.MaxValue))
+            .Select(entry => entry.Key.Minor)
+            .ToList();
+
+        Assert.Equal(new long[] { 1, 2 }, minors);
+    }
+
+    [Fact]
+    public void CompositeKeys_DeleteRemovesOnlyThatPair()
+    {
+        var pool = new BufferPool(NewStore());
+        var tree = BPlusTree.Create(pool);
+        tree.Insert(new TreeKey(5, 1), new RowLocation(1, 0));
+        tree.Insert(new TreeKey(5, 2), new RowLocation(2, 0));
+
+        Assert.True(tree.Delete(new TreeKey(5, 1)));
+
+        Assert.Null(tree.Find(new TreeKey(5, 1)));
+        Assert.NotNull(tree.Find(new TreeKey(5, 2)));
     }
 }

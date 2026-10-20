@@ -47,7 +47,7 @@ public class BPlusTreeFuzzTests
             Assert.Equal(model.TryGetValue(key, out RowLocation expected) ? expected : (RowLocation?)null, tree.Find(key));
         }
 
-        var all = tree.Range(long.MinValue, long.MaxValue).ToList();
+        var all = tree.Range(long.MinValue, long.MaxValue).Select(e => (e.Key.Major, e.Location)).ToList();
         Assert.Equal(model.Select(pair => (pair.Key, pair.Value)), all);
     }
 }

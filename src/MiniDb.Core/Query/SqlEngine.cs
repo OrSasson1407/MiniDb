@@ -103,9 +103,9 @@ internal static class SqlEngine
     private static IEnumerable<RowView> RangeRows(MiniDatabase db, TableInfo table, KeyRangePlan range)
     {
         var tree = BPlusTree.Open(db.Pool, table.PrimaryKeyRoot);
-        foreach ((long key, _) in tree.Range(range.From, range.To))
+        foreach ((TreeKey key, _) in tree.Range(range.From, range.To))
         {
-            RowView? view = RowStore.GetView(db.Pool, table, key);
+            RowView? view = RowStore.GetView(db.Pool, table, key.Major);
             if (view is not null)
             {
                 yield return view.Value;

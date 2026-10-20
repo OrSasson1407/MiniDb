@@ -6,18 +6,18 @@ namespace MiniDb.Index;
 
 /// <summary>
 /// Layout of a leaf page: header (type 1, count 2, next leaf 8) followed by sorted entries
-/// (key 8, page id 8, slot 4). Static helpers work directly on the page bytes.
+/// (key major 8, key minor 8, page id 8, slot 4). Static helpers work directly on the page bytes.
 /// </summary>
 internal static class LeafNode
 {
     public const int HeaderSize = 11;
-    public const int EntrySize = 20;
+    public const int EntrySize = 28;
     public const int Capacity = (PageConstants.PageSize - HeaderSize) / EntrySize;
 
     private const int CountOffset = 1;
     private const int NextOffset = 3;
 
-    public readonly record struct Entry(long Key, RowLocation Location);
+    public readonly record struct Entry(TreeKey Key, RowLocation Location);
 
     public static void Format(Span<byte> page, long next)
     {
@@ -34,18 +34,24 @@ internal static class LeafNode
 
     public static void SetNext(Span<byte> page, long next) => BinaryPrimitives.WriteInt64LittleEndian(page[NextOffset..], next);
 
-    public static long KeyAt(ReadOnlySpan<byte> page, int index) => BinaryPrimitives.ReadInt64LittleEndian(page[EntryOffset(index)..]);
+    public static TreeKey KeyAt(ReadOnlySpan<byte> page, int index)
+    {
+        int at = EntryOffset(index);
+        return new TreeKey(
+            BinaryPrimitives.ReadInt64LittleEndian(page[at..]),
+            BinaryPrimitives.ReadInt64LittleEndian(page[(at + sizeof(long))..]));
+    }
 
     public static RowLocation LocationAt(ReadOnlySpan<byte> page, int index)
     {
-        int at = EntryOffset(index) + sizeof(long);
+        int at = EntryOffset(index) + 2 * sizeof(long);
         return new RowLocation(
             BinaryPrimitives.ReadInt64LittleEndian(page[at..]),
             BinaryPrimitives.ReadInt32LittleEndian(page[(at + sizeof(long))..]));
     }
 
     /// <summary>Index of the first entry whose key is greater than or equal to <paramref name="key"/>.</summary>
-    public static int LowerBound(ReadOnlySpan<byte> page, long key)
+    public static int LowerBound(ReadOnlySpan<byte> page, TreeKey key)
     {
         int low = 0;
         int high = Count(page);
@@ -66,7 +72,7 @@ internal static class LeafNode
     }
 
     /// <summary>Inserts an entry at <paramref name="index"/>, shifting later entries right. The leaf must not be full.</summary>
-    public static void InsertAt(Span<byte> page, int index, long key, RowLocation location)
+    public static void InsertAt(Span<byte> page, int index, TreeKey key, RowLocation location)
     {
         int count = Count(page);
         int at = EntryOffset(index);
@@ -112,11 +118,12 @@ internal static class LeafNode
     private static void SetCount(Span<byte> page, int count) =>
         BinaryPrimitives.WriteUInt16LittleEndian(page[CountOffset..], (ushort)count);
 
-    private static void WriteEntry(Span<byte> page, int index, long key, RowLocation location)
+    private static void WriteEntry(Span<byte> page, int index, TreeKey key, RowLocation location)
     {
         int at = EntryOffset(index);
-        BinaryPrimitives.WriteInt64LittleEndian(page[at..], key);
-        BinaryPrimitives.WriteInt64LittleEndian(page[(at + sizeof(long))..], location.PageId);
-        BinaryPrimitives.WriteInt32LittleEndian(page[(at + 2 * sizeof(long))..], location.Slot);
+        BinaryPrimitives.WriteInt64LittleEndian(page[at..], key.Major);
+        BinaryPrimitives.WriteInt64LittleEndian(page[(at + sizeof(long))..], key.Minor);
+        BinaryPrimitives.WriteInt64LittleEndian(page[(at + 2 * sizeof(long))..], location.PageId);
+        BinaryPrimitives.WriteInt32LittleEndian(page[(at + 3 * sizeof(long))..], location.Slot);
     }
 }

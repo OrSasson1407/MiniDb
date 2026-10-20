@@ -3,7 +3,7 @@ using MiniDb.Storage;
 namespace MiniDb.Index;
 
 /// <summary>
-/// B+ tree from Int64 keys to <see cref="RowLocation"/>. Nodes are pages from the buffer pool.
+/// B+ tree from <see cref="TreeKey"/> to <see cref="RowLocation"/>. Nodes are pages from the buffer pool.
 /// Inserts split full nodes on the way back up; deletes remove the entry without rebalancing (v1).
 /// When the root splits, <see cref="RootPage"/> changes and the owner must persist the new value.
 /// </summary>
@@ -32,7 +32,7 @@ public sealed class BPlusTree
 
     public static BPlusTree Open(IBufferPool pool, long rootPage) => new(pool, rootPage);
 
-    public RowLocation? Find(long key)
+    public RowLocation? Find(TreeKey key)
     {
         using PinnedPage page = FindLeafPinned(key);
         int index = LeafNode.LowerBound(page.Data, key);
@@ -41,7 +41,7 @@ public sealed class BPlusTree
     }
 
     /// <summary>Adds a key. Throws <see cref="DuplicateKeyException"/> if the key already exists.</summary>
-    public void Insert(long key, RowLocation location)
+    public void Insert(TreeKey key, RowLocation location)
     {
         Split? split = InsertInto(RootPage, key, location);
         if (split is not { } promoted)
@@ -58,7 +58,7 @@ public sealed class BPlusTree
     }
 
     /// <summary>Removes a key. Returns false if it was not present.</summary>
-    public bool Delete(long key)
+    public bool Delete(TreeKey key)
     {
         using PinnedPage page = FindLeafPinned(key);
         int index = LeafNode.LowerBound(page.Data, key);
@@ -73,7 +73,7 @@ public sealed class BPlusTree
     }
 
     /// <summary>Entries with <paramref name="from"/> &lt;= key &lt;= <paramref name="to"/>, in key order.</summary>
-    public IEnumerable<(long Key, RowLocation Location)> Range(long from, long to)
+    public IEnumerable<(TreeKey Key, RowLocation Location)> Range(TreeKey from, TreeKey to)
     {
         if (from > to)
         {
@@ -103,9 +103,9 @@ public sealed class BPlusTree
         }
     }
 
-    private readonly record struct Split(long Key, long PageId);
+    private readonly record struct Split(TreeKey Key, long PageId);
 
-    private long FindLeaf(long key)
+    private long FindLeaf(TreeKey key)
     {
         long pageId = RootPage;
         while (true)
@@ -121,7 +121,7 @@ public sealed class BPlusTree
     }
 
     /// <summary>Descends to the leaf for <paramref name="key"/> and returns it still pinned. Internal nodes are released on the way down.</summary>
-    private PinnedPage FindLeafPinned(long key)
+    private PinnedPage FindLeafPinned(TreeKey key)
     {
         long pageId = RootPage;
         while (true)
@@ -144,7 +144,7 @@ public sealed class BPlusTree
         return (LeafNode.ReadAll(page.Data), LeafNode.Next(page.Data));
     }
 
-    private Split? InsertInto(long pageId, long key, RowLocation location)
+    private Split? InsertInto(long pageId, TreeKey key, RowLocation location)
     {
         using PinnedPage page = _pool.Pin(pageId);
         if (LeafNode.IsLeaf(page.Data))
@@ -157,13 +157,13 @@ public sealed class BPlusTree
         return childSplit is { } split ? InsertSeparator(page, childIndex, split) : null;
     }
 
-    private Split? InsertIntoLeaf(PinnedPage page, long key, RowLocation location)
+    private Split? InsertIntoLeaf(PinnedPage page, TreeKey key, RowLocation location)
     {
         Span<byte> data = page.Data;
         int index = LeafNode.LowerBound(data, key);
         if (index < LeafNode.Count(data) && LeafNode.KeyAt(data, index) == key)
         {
-            throw new DuplicateKeyException(key);
+            throw new DuplicateKeyException(key.Major);
         }
 
         if (LeafNode.Count(data) < LeafNode.Capacity)
@@ -176,7 +176,7 @@ public sealed class BPlusTree
         return SplitLeaf(page, key, location);
     }
 
-    private Split SplitLeaf(PinnedPage page, long key, RowLocation location)
+    private Split SplitLeaf(PinnedPage page, TreeKey key, RowLocation location)
     {
         List<LeafNode.Entry> entries = LeafNode.ReadAll(page.Data);
         int index = entries.Count(e => e.Key < key);
@@ -213,12 +213,12 @@ public sealed class BPlusTree
 
     private Split SplitInternal(PinnedPage page, int childIndex, Split child)
     {
-        (List<long> keys, List<long> children) = InternalNode.ReadAll(page.Data);
+        (List<TreeKey> keys, List<long> children) = InternalNode.ReadAll(page.Data);
         keys.Insert(childIndex, child.Key);
         children.Insert(childIndex + 1, child.PageId);
 
         int middle = keys.Count / 2;
-        long promoted = keys[middle];
+        TreeKey promoted = keys[middle];
         long newPageId = _pool.AllocatePage();
         using (PinnedPage right = _pool.Pin(newPageId))
         {

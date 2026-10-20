@@ -6,14 +6,14 @@ namespace MiniDb.Index;
 
 /// <summary>
 /// Layout of an internal page: header (type 1, key count 2), first child (8) at offset 11,
-/// then (key 8, child 8) pairs from offset 19. Key i is the smallest key under child i+1.
+/// then (key major 8, key minor 8, child 8) triples from offset 19. Key i is the smallest key under child i+1.
 /// </summary>
 internal static class InternalNode
 {
     private const int CountOffset = 1;
     private const int FirstChildOffset = 11;
     private const int FirstPairOffset = 19;
-    private const int PairSize = 16;
+    private const int PairSize = 24;
 
     public const int Capacity = (PageConstants.PageSize - FirstPairOffset) / PairSize;
 
@@ -28,15 +28,20 @@ internal static class InternalNode
 
     public static int KeyCount(ReadOnlySpan<byte> page) => BinaryPrimitives.ReadUInt16LittleEndian(page[CountOffset..]);
 
-    public static long KeyAt(ReadOnlySpan<byte> page, int index) =>
-        BinaryPrimitives.ReadInt64LittleEndian(page[PairOffset(index)..]);
+    public static TreeKey KeyAt(ReadOnlySpan<byte> page, int index)
+    {
+        int at = PairOffset(index);
+        return new TreeKey(
+            BinaryPrimitives.ReadInt64LittleEndian(page[at..]),
+            BinaryPrimitives.ReadInt64LittleEndian(page[(at + sizeof(long))..]));
+    }
 
     public static long ChildAt(ReadOnlySpan<byte> page, int index) => index == 0
         ? BinaryPrimitives.ReadInt64LittleEndian(page[FirstChildOffset..])
-        : BinaryPrimitives.ReadInt64LittleEndian(page[(PairOffset(index - 1) + sizeof(long))..]);
+        : BinaryPrimitives.ReadInt64LittleEndian(page[(PairOffset(index - 1) + 2 * sizeof(long))..]);
 
     /// <summary>Index of the child that may contain <paramref name="key"/>: the number of keys less than or equal to it.</summary>
-    public static int ChildIndexFor(ReadOnlySpan<byte> page, long key)
+    public static int ChildIndexFor(ReadOnlySpan<byte> page, TreeKey key)
     {
         int low = 0;
         int high = KeyCount(page);
@@ -57,20 +62,19 @@ internal static class InternalNode
     }
 
     /// <summary>Inserts a separator key at <paramref name="index"/> with its right-hand child. The node must not be full.</summary>
-    public static void InsertAt(Span<byte> page, int index, long key, long rightChild)
+    public static void InsertAt(Span<byte> page, int index, TreeKey key, long rightChild)
     {
         int count = KeyCount(page);
         int at = PairOffset(index);
         page.Slice(at, (count - index) * PairSize).CopyTo(page[(at + PairSize)..]);
-        BinaryPrimitives.WriteInt64LittleEndian(page[at..], key);
-        BinaryPrimitives.WriteInt64LittleEndian(page[(at + sizeof(long))..], rightChild);
+        WriteKeyAndChild(page, at, key, rightChild);
         SetKeyCount(page, count + 1);
     }
 
-    public static (List<long> Keys, List<long> Children) ReadAll(ReadOnlySpan<byte> page)
+    public static (List<TreeKey> Keys, List<long> Children) ReadAll(ReadOnlySpan<byte> page)
     {
         int count = KeyCount(page);
-        var keys = new List<long>(count);
+        var keys = new List<TreeKey>(count);
         var children = new List<long>(count + 1) { ChildAt(page, 0) };
         for (int i = 0; i < count; i++)
         {
@@ -82,20 +86,25 @@ internal static class InternalNode
     }
 
     /// <summary>Rewrites the whole page. <paramref name="children"/> must have exactly one more element than <paramref name="keys"/>.</summary>
-    public static void WriteAll(Span<byte> page, IReadOnlyList<long> keys, IReadOnlyList<long> children)
+    public static void WriteAll(Span<byte> page, IReadOnlyList<TreeKey> keys, IReadOnlyList<long> children)
     {
         Format(page, children[0]);
         for (int i = 0; i < keys.Count; i++)
         {
-            int at = PairOffset(i);
-            BinaryPrimitives.WriteInt64LittleEndian(page[at..], keys[i]);
-            BinaryPrimitives.WriteInt64LittleEndian(page[(at + sizeof(long))..], children[i + 1]);
+            WriteKeyAndChild(page, PairOffset(i), keys[i], children[i + 1]);
         }
 
         SetKeyCount(page, keys.Count);
     }
 
     private static int PairOffset(int index) => FirstPairOffset + index * PairSize;
+
+    private static void WriteKeyAndChild(Span<byte> page, int at, TreeKey key, long child)
+    {
+        BinaryPrimitives.WriteInt64LittleEndian(page[at..], key.Major);
+        BinaryPrimitives.WriteInt64LittleEndian(page[(at + sizeof(long))..], key.Minor);
+        BinaryPrimitives.WriteInt64LittleEndian(page[(at + 2 * sizeof(long))..], child);
+    }
 
     private static void SetKeyCount(Span<byte> page, int count) =>
         BinaryPrimitives.WriteUInt16LittleEndian(page[CountOffset..], (ushort)count);
