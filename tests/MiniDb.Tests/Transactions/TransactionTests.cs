@@ -93,18 +93,49 @@ public class TransactionTests : IDisposable
     }
 
     [Fact]
-    public void TransactionTouchingMorePagesThanPool_Throws_AndCanStillRollBack()
+    public void TransactionTouchingMorePagesThanPool_Commits_AndSurvivesCheckpoint()
     {
-        var store = NewStoreWithPages(3);
+        var store = NewStoreWithPages(6);
         var pool = new BufferPool(store, capacity: 2);
         using var wal = new WriteAheadLog(_walPath);
         var manager = new TransactionManager(store, pool, wal);
 
         using (Transaction tx = manager.Begin())
         {
-            tx.WritePage(1, PageWith(1));
-            tx.WritePage(2, PageWith(2));
-            Assert.Throws<BufferPoolFullException>(() => tx.WritePage(3, PageWith(3)));
+            for (long page = 1; page <= 5; page++)
+            {
+                tx.WritePage(page, PageWith((byte)page));
+            }
+
+            tx.Commit();
+        }
+
+        manager.Checkpoint();
+        var read = new byte[PageConstants.PageSize];
+        for (long page = 1; page <= 5; page++)
+        {
+            store.ReadPage(page, read);
+            Assert.Equal((byte)page, read[0]);
+        }
+    }
+
+    [Fact]
+    public void TransactionFarLargerThanPool_Throws_AndCanStillRollBack()
+    {
+        var store = NewStoreWithPages(40);
+        var pool = new BufferPool(store, capacity: 2);
+        using var wal = new WriteAheadLog(_walPath);
+        var manager = new TransactionManager(store, pool, wal);
+
+        using (Transaction tx = manager.Begin())
+        {
+            Assert.Throws<BufferPoolFullException>(() =>
+            {
+                for (long page = 1; page < 40; page++)
+                {
+                    tx.WritePage(page, PageWith(7));
+                }
+            });
         }
 
         using (Transaction next = manager.Begin())
@@ -112,10 +143,13 @@ public class TransactionTests : IDisposable
             next.WritePage(1, PageWith(9));
             next.Commit();
         }
+
         manager.Checkpoint();
         var read = new byte[PageConstants.PageSize];
         store.ReadPage(1, read);
         Assert.Equal(9, read[0]);
+        store.ReadPage(2, read);
+        Assert.Equal(0, read[0]);
     }
 
     [Fact]

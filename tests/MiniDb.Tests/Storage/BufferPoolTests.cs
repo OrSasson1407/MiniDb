@@ -18,15 +18,29 @@ public class BufferPoolTests
     }
 
     [Fact]
-    public void PinningMoreDistinctPagesThanCapacity_WhileAllPinned_Throws()
+    public void PinningMoreDistinctPagesThanCapacity_WhileAllPinned_GrowsThePool()
     {
         var store = new MemoryPageStore();
         var pages = Enumerable.Range(0, 5).Select(_ => store.AllocatePage()).ToList();
         using var pool = new BufferPool(store, capacity: 4);
-        var held = pages.Take(4).Select(pool.Pin).ToList();
 
-        Assert.Throws<BufferPoolFullException>(() => pool.Pin(pages[4]));
+        var held = pages.Select(pool.Pin).ToList();
 
+        Assert.Equal(pages, held.Select(p => p.PageId).ToList());
+        held.ForEach(p => p.Dispose());
+    }
+
+    [Fact]
+    public void PinningWithoutEverReleasing_EventuallyThrows()
+    {
+        var store = new MemoryPageStore();
+        var pages = Enumerable.Range(0, 200).Select(_ => store.AllocatePage()).ToList();
+        using var pool = new BufferPool(store, capacity: 4);
+        var held = new List<PinnedPage>();
+
+        Assert.Throws<BufferPoolFullException>(() => pages.ForEach(id => held.Add(pool.Pin(id))));
+
+        Assert.InRange(held.Count, 5, 100);
         held.ForEach(p => p.Dispose());
     }
 
@@ -45,8 +59,57 @@ public class BufferPoolTests
             page.MarkDirty();
         }
 
-        Assert.Throws<BufferPoolFullException>(() => pool.Pin(second));
+        using (pool.Pin(second)) { }
+
         Assert.Equal(0, counting.WriteCount);
+    }
+
+    [Fact]
+    public void TransactionLargerThanThePool_Commits_AndKeepsEveryChange()
+    {
+        var counting = new CountingPageStore(new MemoryPageStore());
+        var ids = Enumerable.Range(0, 40).Select(_ => counting.AllocatePage()).ToList();
+        using var pool = new BufferPool(counting, capacity: 8);
+        pool.BeginTracking();
+
+        foreach (long id in ids)
+        {
+            using PinnedPage page = pool.Pin(id);
+            page.Data[0] = (byte)(id + 1);
+            page.MarkDirty();
+        }
+
+        Assert.Equal(0, counting.WriteCount);
+        pool.CommitTracking();
+
+        foreach (long id in ids)
+        {
+            using PinnedPage page = pool.Pin(id);
+            Assert.Equal((byte)(id + 1), page.Data[0]);
+        }
+    }
+
+    [Fact]
+    public void RolledBackLargeTransaction_RestoresEveryPage()
+    {
+        var store = new MemoryPageStore();
+        var ids = Enumerable.Range(0, 40).Select(_ => store.AllocatePage()).ToList();
+        using var pool = new BufferPool(store, capacity: 8);
+        pool.BeginTracking();
+        foreach (long id in ids)
+        {
+            using PinnedPage page = pool.Pin(id);
+            page.Data[0] = 0x77;
+            page.MarkDirty();
+        }
+
+        pool.RollbackTracking();
+
+        foreach (long id in ids)
+        {
+            using PinnedPage page = pool.Pin(id);
+            Assert.Equal(0, page.Data[0]);
+        }
     }
 
     [Fact]

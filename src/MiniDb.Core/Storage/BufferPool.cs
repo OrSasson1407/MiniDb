@@ -9,6 +9,7 @@ namespace MiniDb.Storage;
 /// Loading and evicting take the partition's lock, and each partition has its own LRU list. A page changed by the active
 /// transaction is never evicted or written, so uncommitted data never reaches the data file (no-steal). A page changed
 /// by a committed transaction may be written back at any time, because its change is already in the WAL.
+/// A transaction that changes more pages than the pool holds makes the pool grow for as long as it runs.
 /// </summary>
 public sealed class BufferPool : IBufferPool
 {
@@ -18,6 +19,14 @@ public sealed class BufferPool : IBufferPool
 
     /// <summary>A page pinned this many times becomes sticky (see <see cref="PageFrame.Sticky"/>).</summary>
     private const int StickyHits = 128;
+
+    /// <summary>
+    /// When every frame of a partition is pinned or holds an uncommitted change, the partition grows instead of failing,
+    /// up to this many times its normal size (and at least <see cref="MinOverflowFrames"/> frames). It shrinks back afterwards.
+    /// </summary>
+    private const int OverflowFactor = 8;
+
+    private const int MinOverflowFrames = 16;
 
     /// <summary>The LRU list is updated, and stickiness checked, once per this many pins of a page.</summary>
     private const int TouchInterval = 16;
@@ -338,6 +347,7 @@ public sealed class BufferPool : IBufferPool
         _snapshotted.Clear();
         _trackedPages.Clear();
         _tracking = false;
+        ShrinkAfterTransaction();
     }
 
     private void WriteBack(PageFrame frame)
@@ -397,14 +407,86 @@ public sealed class BufferPool : IBufferPool
             return created;
         }
 
-        PageFrame victim = ClaimVictim(partition) ?? throw new BufferPoolFullException(Capacity);
+        PageFrame? victim = ClaimVictim(partition);
+        if (victim is null)
+        {
+            return CreateOverflowFrame(partition);
+        }
+
         if (victim.IsDirty)
         {
             WriteBack(victim);
         }
 
         Remove(partition, victim);
+        if (partition.Frames.Count > partition.Capacity)
+        {
+            ShrinkPartition(partition, maxDrops: 2);
+        }
+
         return victim;
+    }
+
+    /// <summary>Caller holds the partition lock. Adds a frame beyond the partition's capacity, or fails at the hard limit.</summary>
+    private PageFrame CreateOverflowFrame(Partition partition)
+    {
+        if (partition.Frames.Count >= Math.Max(partition.Capacity * OverflowFactor, MinOverflowFrames))
+        {
+            throw new BufferPoolFullException(Capacity);
+        }
+
+        var created = new PageFrame { Gate = partition.Gate };
+        partition.Frames.Add(created);
+        return created;
+    }
+
+    /// <summary>
+    /// Caller holds the partition lock. Drops frames above the partition's capacity, starting with free ones and then
+    /// the least recently used unpinned pages, until <paramref name="maxDrops"/> frames are gone.
+    /// </summary>
+    private void ShrinkPartition(Partition partition, int maxDrops)
+    {
+        var dropped = new HashSet<PageFrame>();
+        int excess = Math.Min(partition.Frames.Count - partition.Capacity, maxDrops);
+        while (excess > 0 && partition.FreeFrames.Count > 0)
+        {
+            dropped.Add(partition.FreeFrames.Pop());
+            excess--;
+        }
+
+        while (excess > 0 && ClaimVictim(partition) is { } victim)
+        {
+            if (victim.IsDirty)
+            {
+                WriteBack(victim);
+            }
+
+            Remove(partition, victim);
+            dropped.Add(victim);
+            excess--;
+        }
+
+        if (dropped.Count > 0)
+        {
+            partition.Frames.RemoveAll(dropped.Contains);
+        }
+    }
+
+    /// <summary>Gives back the memory a large transaction needed. Runs once the transaction has ended.</summary>
+    private void ShrinkAfterTransaction()
+    {
+        foreach (Partition partition in _partitions)
+        {
+            if (partition.Frames.Count <= partition.Capacity)
+            {
+                continue;
+            }
+
+            lock (partition.Gate)
+            {
+                ShrinkPartition(partition, maxDrops: int.MaxValue);
+            }
+        }
     }
 
     /// <summary>Finds the least recently used frame nobody pins, and claims it so that no reader can pin it meanwhile.</summary>
