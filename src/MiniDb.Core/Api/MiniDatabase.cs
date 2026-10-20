@@ -1,6 +1,7 @@
 using MiniDb.Catalog;
 using MiniDb.Database;
 using MiniDb.Index;
+using MiniDb.Query;
 using MiniDb.Records;
 using MiniDb.Storage;
 using MiniDb.Transactions;
@@ -95,6 +96,13 @@ public sealed class MiniDatabase : IDisposable
             _catalog.Create(new TableInfo(schema, primaryRoot, new Dictionary<string, long>(), heap, heap));
             return true;
         });
+    }
+
+    /// <summary>Runs one SQL statement. SELECT returns rows; INSERT and DELETE report the rows they changed.</summary>
+    public QueryResult Execute(string sql)
+    {
+        EnsureOpen();
+        return SqlEngine.Run(this, sql);
     }
 
     public Table GetTable(string name)
