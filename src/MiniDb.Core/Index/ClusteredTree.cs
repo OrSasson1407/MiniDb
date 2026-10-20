@@ -90,20 +90,35 @@ public sealed class ClusteredTree
         long pageId = FindLeaf(from);
         while (pageId != 0)
         {
-            (List<(long Key, byte[] Record)> cells, long next, bool reachedEnd) = ReadLeafRange(pageId, from, to);
-            foreach ((long, byte[]) cell in cells)
+            using PinnedPage page = _pool.Pin(pageId);
+            int slots = SlotsOf(page.Data);
+            for (int i = 0; i < slots; i++)
             {
-                yield return cell;
+                long key = KeyAt(page.Data, i);
+                if (key < from)
+                {
+                    continue;
+                }
+
+                if (key > to)
+                {
+                    yield break;
+                }
+
+                yield return (key, RecordAt(page.Data, i));
             }
 
-            if (reachedEnd)
-            {
-                yield break;
-            }
-
-            pageId = next;
+            pageId = NextOf(page.Data);
         }
     }
+
+    private static int SlotsOf(Span<byte> data) => SlottedPage.Open(data).SlotCount;
+
+    private static long NextOf(Span<byte> data) => SlottedPage.Open(data).NextPage;
+
+    private static long KeyAt(Span<byte> data, int index) => KeyOf(SlottedPage.Open(data).Read(index));
+
+    private static byte[] RecordAt(Span<byte> data, int index) => SlottedPage.Open(data).Read(index)[KeyBytes..].ToArray();
 
     private static byte[] BuildCell(long key, byte[] record)
     {
@@ -247,31 +262,6 @@ public sealed class ClusteredTree
         }
 
         return cells;
-    }
-
-    private (List<(long Key, byte[] Record)> Cells, long Next, bool ReachedEnd) ReadLeafRange(long pageId, long from, long to)
-    {
-        using PinnedPage page = _pool.Pin(pageId);
-        SlottedPage leaf = SlottedPage.Open(page.Data);
-        var cells = new List<(long Key, byte[] Record)>();
-        for (int i = 0; i < leaf.SlotCount; i++)
-        {
-            ReadOnlySpan<byte> cell = leaf.Read(i);
-            long key = KeyOf(cell);
-            if (key < from)
-            {
-                continue;
-            }
-
-            if (key > to)
-            {
-                return (cells, 0, true);
-            }
-
-            cells.Add((key, cell[KeyBytes..].ToArray()));
-        }
-
-        return (cells, leaf.NextPage, false);
     }
 
     private long FindLeaf(long key)
