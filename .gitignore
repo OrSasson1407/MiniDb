@@ -485,3 +485,4 @@ $RECYCLE.BIN/
 
 # SDD workspace (git-ignored scratch)
 .superpowers/
+TestResults/

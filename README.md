@@ -1,6 +1,6 @@
 # MiniDb
 
-מנוע מסד נתונים קטן ב-C#, נבנה מאפס כפרויקט לימודי. תכנון מלא: [docs/superpowers/specs/2026-10-20-minidb-design.md](docs/superpowers/specs/2026-10-20-minidb-design.md). תוכנית המימוש: [docs/superpowers/plans/2026-10-20-minidb.md](docs/superpowers/plans/2026-10-20-minidb.md).
+מנוע מסד נתונים קטן ב-C#, נבנה מאפס כפרויקט לימודי. מה כלול בגרסה 1.0 ומה לא: [docs/v1-scope.md](docs/v1-scope.md). שינויים: [CHANGELOG.md](CHANGELOG.md). תכנון מלא: [docs/superpowers/specs/2026-10-20-minidb-design.md](docs/superpowers/specs/2026-10-20-minidb-design.md). תוכנית המימוש: [docs/superpowers/plans/2026-10-20-minidb.md](docs/superpowers/plans/2026-10-20-minidb.md).
 
 ## מה יש בפנים
 

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore MiniDb.sln
+
+      - name: Build
+        run: dotnet build MiniDb.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/MiniDb.Tests/MiniDb.Tests.csproj -c Release --no-build --results-directory TestResults --logger "trx;LogFileName=results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults/results.trx
+
+  benchmarks-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Compiles the benchmark project so that a broken benchmark does not go unnoticed.
+      # Full runs are done by hand on the documented machine, not in CI, because CI timings are not stable.
+      - name: Build benchmarks
+        run: dotnet build benchmarks/MiniDb.Benchmarks/MiniDb.Benchmarks.csproj -c Release
