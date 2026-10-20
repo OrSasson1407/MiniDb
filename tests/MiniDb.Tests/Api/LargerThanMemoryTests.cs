@@ -94,3 +94,31 @@ public class LargerThanMemoryTests : IDisposable
         Assert.Equal(Rows / 2, db.Execute("SELECT id FROM users WHERE score < 500").Rows.Count);
     }
 }
+
+public class ScanLockTests : IDisposable
+{
+    private readonly string _directory = Directory.CreateTempSubdirectory("minidb-scanlock-").FullName;
+
+    public void Dispose()
+    {
+        Directory.Delete(_directory, recursive: true);
+    }
+
+    [Fact]
+    public void WritingWhileThisThreadIsEnumeratingAScan_ThrowsInsteadOfDeadlocking()
+    {
+        using MiniDatabase db = MiniDatabase.Open(Path.Combine(_directory, "scan.mdb"));
+        db.Execute("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)");
+        Table table = db.GetTable("t");
+        table.Insert(new object?[] { 1L, 1 });
+        table.Insert(new object?[] { 2L, 2 });
+
+        Assert.Throws<LockRecursionException>(() =>
+        {
+            foreach (object?[] _ in table.Scan())
+            {
+                table.Insert(new object?[] { 99L, 99 });
+            }
+        });
+    }
+}

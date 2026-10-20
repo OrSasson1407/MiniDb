@@ -37,13 +37,25 @@ public class ConcurrentLookupBenchmark
     [Benchmark]
     public void ParallelLookups()
     {
-        Parallel.For(0, Threads, new ParallelOptions { MaxDegreeOfParallelism = Threads }, thread =>
+        // Dedicated threads: the thread pool's start-up and scheduling would otherwise be part of the measurement.
+        Thread[] workers = Enumerable.Range(0, Threads).Select(thread => new Thread(() => LookupLoop(thread))).ToArray();
+        foreach (Thread worker in workers)
         {
-            var random = new Random(thread);
-            for (int i = 0; i < LookupsPerThread; i++)
-            {
-                _users.Get(random.NextInt64(0, Rows));
-            }
-        });
+            worker.Start();
+        }
+
+        foreach (Thread worker in workers)
+        {
+            worker.Join();
+        }
+    }
+
+    private void LookupLoop(int seed)
+    {
+        var random = new Random(seed);
+        for (int i = 0; i < LookupsPerThread; i++)
+        {
+            _users.Get(random.NextInt64(0, Rows));
+        }
     }
 }
