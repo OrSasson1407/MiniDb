@@ -199,4 +199,22 @@ public class TransactionTests : IDisposable
         manager.Checkpoint();
         Assert.True(counting.WriteCount > 0);
     }
+
+    [Fact]
+    public void AutocommitWal_StaysSmall_WhenOnlyBytesChange()
+    {
+        var store = NewStoreWithPages(1);
+        var pool = new BufferPool(store);
+        using var wal = new WriteAheadLog(_walPath);
+        var manager = new TransactionManager(store, pool, wal);
+
+        for (int i = 0; i < 50; i++)
+        {
+            using Transaction tx = manager.Begin();
+            tx.WritePage(1, PageWith((byte)(i + 1)));
+            tx.Commit();
+        }
+
+        Assert.True(wal.Length < 50 * 200, $"WAL is {wal.Length} bytes");
+    }
 }

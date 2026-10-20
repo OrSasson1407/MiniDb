@@ -19,9 +19,10 @@ public static class Recovery
 
         foreach (WalFrame frame in frames)
         {
-            if (frame.Type == WalFrameType.PageImage && committed.Contains(frame.TransactionId))
+            bool isPageChange = frame.Type is WalFrameType.PageImage or WalFrameType.PageDelta;
+            if (isPageChange && committed.Contains(frame.TransactionId))
             {
-                ApplyPageImage(store, frame);
+                ApplyPageChange(store, frame);
             }
         }
 
@@ -29,7 +30,7 @@ public static class Recovery
         wal.Truncate();
     }
 
-    private static void ApplyPageImage(IPageStore store, WalFrame frame)
+    private static void ApplyPageChange(IPageStore store, WalFrame frame)
     {
         // Pages allocated by a transaction that crashed are not in the log, so grow the file as needed.
         while (store.PageCount <= frame.PageId)
@@ -37,6 +38,18 @@ public static class Recovery
             store.AllocatePage();
         }
 
-        store.WritePage(frame.PageId, frame.Payload);
+        if (frame.Type == WalFrameType.PageImage)
+        {
+            store.WritePage(frame.PageId, frame.Payload);
+            return;
+        }
+
+        // A delta applies to the page as the store holds it. Every change since the last checkpoint is in the log,
+        // in order, so the store holds the base the delta was computed against.
+        var page = new byte[PageConstants.PageSize];
+        store.ReadPage(frame.PageId, page);
+        PageDelta.Apply(page, frame.Payload);
+        PageChecksum.Stamp(page);
+        store.WritePage(frame.PageId, page);
     }
 }

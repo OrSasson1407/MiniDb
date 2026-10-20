@@ -68,6 +68,24 @@ public sealed class BufferPool : IBufferPool
     /// <summary>Pages changed by the active transaction.</summary>
     public IReadOnlyCollection<long> TrackedPages => _trackedPages;
 
+    /// <summary>
+    /// For a page changed by the active transaction: its image before the transaction and its current image.
+    /// Returns false when no before-image was taken.
+    /// </summary>
+    public bool TryGetBeforeImage(long pageId, out ReadOnlySpan<byte> before, out ReadOnlySpan<byte> current)
+    {
+        if (_cached.TryGetValue(pageId, out PageFrame? frame) && frame.HasSnapshot)
+        {
+            before = frame.SnapshotBuffer;
+            current = frame.Data;
+            return true;
+        }
+
+        before = ReadOnlySpan<byte>.Empty;
+        current = ReadOnlySpan<byte>.Empty;
+        return false;
+    }
+
     /// <summary>Starts recording a transaction. Pages it changes stay in the pool until it commits or rolls back.</summary>
     public void BeginTracking()
     {

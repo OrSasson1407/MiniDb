@@ -16,6 +16,7 @@ public sealed class TransactionManager
     private readonly SemaphoreSlim _gate = new(1, 1);
     private long _nextTransactionId = 1;
     private bool _walUnsynced;
+    private readonly byte[] _deltaScratch = new byte[PageConstants.PageSize * 2];
 
     /// <summary>Raised after every rollback, including the rollback of a failed commit.</summary>
     public event Action? RolledBack;
@@ -69,6 +70,25 @@ public sealed class TransactionManager
         }
     }
 
+    /// <summary>Logs only the bytes that changed in a page, or the whole page when no before-image exists.</summary>
+    private void AppendPage(long transactionId, long pageId)
+    {
+        if (_pool.TryGetBeforeImage(pageId, out ReadOnlySpan<byte> before, out ReadOnlySpan<byte> current))
+        {
+            int length = PageDelta.TryCompute(before, current, _deltaScratch);
+            if (length >= 0)
+            {
+                byte[] payload = _deltaScratch.AsSpan(0, length).ToArray();
+                _wal.Append(new WalFrame(transactionId, WalFrameType.PageDelta, pageId, payload));
+                return;
+            }
+        }
+
+        byte[] image = _pool.ReadCopy(pageId);
+        PageChecksum.Stamp(image);
+        _wal.Append(new WalFrame(transactionId, WalFrameType.PageImage, pageId, image));
+    }
+
     private void WriteCommitRecords(Transaction transaction)
     {
         long mark = _wal.Length;
@@ -76,9 +96,7 @@ public sealed class TransactionManager
         {
             foreach (long pageId in _pool.TrackedPages.ToArray())
             {
-                byte[] image = _pool.ReadCopy(pageId);
-                PageChecksum.Stamp(image);
-                _wal.Append(new WalFrame(transaction.Id, WalFrameType.PageImage, pageId, image));
+                AppendPage(transaction.Id, pageId);
             }
 
             _wal.Append(new WalFrame(transaction.Id, WalFrameType.Commit, 0, Array.Empty<byte>()));

@@ -12,6 +12,9 @@ public static class WalFrameCodec
     private const int HeaderSize = 8 + 1 + 8 + 4;
     private const int ChecksumSize = sizeof(uint);
 
+    /// <summary>Largest payload: a full page image, or a delta of up to one page's worth of segments.</summary>
+    private const int MaxPayloadBytes = PageConstants.PageSize * 2;
+
     public static byte[] Encode(WalFrame frame)
     {
         ValidatePayload(frame);
@@ -41,7 +44,7 @@ public static class WalFrameCodec
         }
 
         int payloadLength = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(17));
-        if (payloadLength < 0 || payloadLength > PageConstants.PageSize || !IsKnownType(header[8]))
+        if (payloadLength < 0 || payloadLength > MaxPayloadBytes || !IsKnownType(header[8]))
         {
             return false;
         }
@@ -75,6 +78,11 @@ public static class WalFrameCodec
             throw new ArgumentException($"A PageImage payload must be {PageConstants.PageSize} bytes.", nameof(frame));
         }
 
+        if (frame.Type == WalFrameType.PageDelta && frame.Payload.Length > MaxPayloadBytes)
+        {
+            throw new ArgumentException("A PageDelta payload is too large.", nameof(frame));
+        }
+
         if (frame.Type == WalFrameType.Commit && frame.Payload.Length != 0)
         {
             throw new ArgumentException("A Commit frame carries no payload.", nameof(frame));
@@ -82,7 +90,7 @@ public static class WalFrameCodec
     }
 
     private static bool IsKnownType(byte type) =>
-        type is (byte)WalFrameType.PageImage or (byte)WalFrameType.Commit;
+        type is (byte)WalFrameType.PageImage or (byte)WalFrameType.Commit or (byte)WalFrameType.PageDelta;
 
     private static bool ReadExactly(Stream stream, Span<byte> buffer)
     {

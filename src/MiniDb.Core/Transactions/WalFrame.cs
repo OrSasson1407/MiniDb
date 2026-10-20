@@ -7,6 +7,9 @@ public enum WalFrameType : byte
 
     /// <summary>Marks the transaction as committed. Carries no payload.</summary>
     Commit = 2,
+
+    /// <summary>Only the bytes that changed in a page, as segments. See PageDelta.</summary>
+    PageDelta = 3,
 }
 
 /// <summary>One record of the write-ahead log.</summary>
