@@ -21,6 +21,9 @@ public sealed class WriteAheadLog : IDisposable
         _length += bytes.Length;
     }
 
+    /// <summary>Current size of the log file in bytes.</summary>
+    public long Length => _length;
+
     public void Sync() => RandomAccess.FlushToDisk(_handle);
 
     /// <summary>Reads every complete, valid record from the start. Stops silently at the first damaged one.</summary>

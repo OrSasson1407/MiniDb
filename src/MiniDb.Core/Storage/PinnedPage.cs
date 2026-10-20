@@ -19,7 +19,7 @@ public sealed class PinnedPage : IDisposable
     public Span<byte> Data => _frame.Data;
 
     /// <summary>Marks the page as changed, so it is written by the next FlushAll.</summary>
-    public void MarkDirty() => _frame.IsDirty = true;
+    public void MarkDirty() => _pool.MarkDirty(_frame);
 
     public void Dispose()
     {

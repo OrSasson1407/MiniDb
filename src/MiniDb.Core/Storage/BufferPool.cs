@@ -11,6 +11,7 @@ public sealed class BufferPool : IBufferPool
     private readonly LinkedList<PageFrame> _lru = new();
     private readonly List<PageFrame> _frames = new();
     private readonly Stack<PageFrame> _freeFrames = new();
+    private readonly HashSet<long> _trackedPages = new();
 
     public BufferPool(IPageStore store, int capacity = 256)
     {
@@ -29,6 +30,24 @@ public sealed class BufferPool : IBufferPool
     }
 
     public long AllocatePage() => _store.AllocatePage();
+
+    /// <summary>Pages marked dirty since the last <see cref="ClearTracking"/>. These are the pages a transaction changed.</summary>
+    public IReadOnlyCollection<long> TrackedPages => _trackedPages;
+
+    public void ClearTracking() => _trackedPages.Clear();
+
+    /// <summary>Returns a copy of the page's current bytes, loading it if needed.</summary>
+    public byte[] ReadCopy(long pageId)
+    {
+        using PinnedPage page = Pin(pageId);
+        return page.Data.ToArray();
+    }
+
+    internal void MarkDirty(PageFrame frame)
+    {
+        frame.IsDirty = true;
+        _trackedPages.Add(frame.PageId);
+    }
 
     public void FlushAll()
     {
