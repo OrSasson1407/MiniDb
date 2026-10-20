@@ -26,10 +26,10 @@ internal sealed class PageFrame
     /// <summary>Whether the page was dirty when <see cref="Snapshot"/> was taken.</summary>
     public bool SnapshotWasDirty { get; set; }
 
-    public int PinCount { get; set; }
+    public int PinCount;
 
     /// <summary>Pins since the page was loaded. Used to update the LRU list only on some of them.</summary>
-    public int Hits { get; set; }
+    public int Hits;
 
     /// <summary>Lock of the partition that owns this frame. Set when the frame is created.</summary>
     public object? Gate { get; set; }

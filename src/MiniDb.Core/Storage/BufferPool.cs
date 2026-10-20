@@ -1,8 +1,12 @@
+using System.Collections.Concurrent;
+using System.Threading;
+
 namespace MiniDb.Storage;
 
 /// <summary>
-/// LRU page cache with a fixed number of frames, split into partitions. Each partition has its own lock and its own
-/// LRU list, so readers working on different pages rarely wait for each other. A page changed by the active
+/// LRU page cache with a fixed number of frames, split into partitions. A cache hit takes no lock: the page is pinned
+/// with an atomic counter, and a frame that is being evicted is marked so that a pin fails and falls back to the lock.
+/// Loading and evicting take the partition's lock, and each partition has its own LRU list. A page changed by the active
 /// transaction is never evicted or written, so uncommitted data never reaches the data file (no-steal). A page changed
 /// by a committed transaction may be written back at any time, because its change is already in the WAL.
 /// </summary>
@@ -11,6 +15,9 @@ public sealed class BufferPool : IBufferPool
     /// <summary>Partitions are only added when each one still has enough frames to hold a scan's working set.</summary>
     private const int MinFramesPerPartition = 64;
     private const int MaxPartitions = 16;
+
+    /// <summary>A frame whose pin count is this value is being evicted or was freed; nobody may pin it.</summary>
+    private const int Claimed = -1;
 
     private readonly IPageStore _store;
     private readonly Partition[] _partitions;
@@ -44,9 +51,23 @@ public sealed class BufferPool : IBufferPool
     public PinnedPage Pin(long pageId, bool sequential)
     {
         Partition partition = PartitionOf(pageId);
+        if (partition.Cached.TryGetValue(pageId, out PageFrame? hit) && TryPin(hit, pageId))
+        {
+            if (!sequential && (Interlocked.Increment(ref hit.Hits) & 3) == 0)
+            {
+                lock (partition.Gate)
+                {
+                    partition.Lru.Remove(hit.Node);
+                    partition.Lru.AddFirst(hit.Node);
+                }
+            }
+
+            return Track(hit);
+        }
+
         lock (partition.Gate)
         {
-            return PinCore(partition, pageId, sequential);
+            return PinSlow(partition, pageId, sequential);
         }
     }
 
@@ -152,7 +173,7 @@ public sealed class BufferPool : IBufferPool
                 return;
             }
 
-            if (frame.PinCount > 0)
+            if (Interlocked.CompareExchange(ref frame.PinCount, Claimed, 0) != 0)
             {
                 throw new InvalidOperationException($"Page {pageId} is pinned and cannot be discarded.");
             }
@@ -183,18 +204,39 @@ public sealed class BufferPool : IBufferPool
 
     internal void Unpin(PageFrame frame)
     {
-        lock (frame.Gate!)
-        {
-            if (frame.PinCount > 0)
-            {
-                frame.PinCount--;
-            }
-        }
+        Interlocked.Decrement(ref frame.PinCount);
     }
 
     private Partition PartitionOf(long pageId) => _partitions[pageId % _partitions.Length];
 
-    private PinnedPage PinCore(Partition partition, long pageId, bool sequential)
+    /// <summary>
+    /// Adds one pin to a frame if it is not being evicted, and checks that it still holds the page we asked for:
+    /// a reader may have looked the frame up just before it was reused for another page.
+    /// </summary>
+    private static bool TryPin(PageFrame frame, long pageId)
+    {
+        int current;
+        do
+        {
+            current = Volatile.Read(ref frame.PinCount);
+            if (current < 0)
+            {
+                return false;
+            }
+        }
+        while (Interlocked.CompareExchange(ref frame.PinCount, current + 1, current) != current);
+
+        if (frame.PageId == pageId)
+        {
+            return true;
+        }
+
+        Interlocked.Decrement(ref frame.PinCount);
+        return false;
+    }
+
+    /// <summary>Caller holds the partition lock. Loads the page if needed and pins it.</summary>
+    private PinnedPage PinSlow(Partition partition, long pageId, bool sequential)
     {
         PageFrame frame;
         if (partition.Cached.TryGetValue(pageId, out PageFrame? cached))
@@ -204,16 +246,24 @@ public sealed class BufferPool : IBufferPool
             {
                 Touch(partition, frame);
             }
+
+            // No evictor can claim the frame while we hold the partition lock, so a plain increment is safe.
+            Interlocked.Increment(ref frame.PinCount);
         }
         else
         {
             frame = LoadFrame(partition, pageId, sequential);
+            Interlocked.Increment(ref frame.PinCount);
         }
 
-        frame.PinCount++;
+        return Track(frame);
+    }
+
+    /// <summary>Remembers the page as it was before the active transaction first pinned it, so rollback can restore it.</summary>
+    private PinnedPage Track(PageFrame frame)
+    {
         if (_tracking && !frame.HasSnapshot)
         {
-            // Keep the state before the transaction touches the page, so rollback can restore it.
             frame.SnapshotBuffer ??= new byte[PageConstants.PageSize];
             frame.Data.AsSpan().CopyTo(frame.SnapshotBuffer);
             frame.HasSnapshot = true;
@@ -244,6 +294,7 @@ public sealed class BufferPool : IBufferPool
         frame.IsDirty = false;
     }
 
+    /// <summary>Caller holds the partition lock. Reads the page into a frame and publishes it as unpinned.</summary>
     private PageFrame LoadFrame(Partition partition, long pageId, bool sequential)
     {
         PageFrame frame = TakeFrame(partition);
@@ -263,7 +314,8 @@ public sealed class BufferPool : IBufferPool
         frame.TxDirty = false;
         frame.HasSnapshot = false;
         frame.Hits = 0;
-        partition.Cached.Add(pageId, frame);
+        Volatile.Write(ref frame.PinCount, 0);
+        partition.Cached[pageId] = frame;
         if (sequential)
         {
             partition.Lru.AddLast(frame.Node);
@@ -276,6 +328,7 @@ public sealed class BufferPool : IBufferPool
         return frame;
     }
 
+    /// <summary>Returns a frame that nobody can pin: a free one, a new one, or a claimed victim.</summary>
     private PageFrame TakeFrame(Partition partition)
     {
         if (partition.FreeFrames.Count > 0)
@@ -290,7 +343,7 @@ public sealed class BufferPool : IBufferPool
             return created;
         }
 
-        PageFrame victim = FindEvictable(partition) ?? throw new BufferPoolFullException(Capacity);
+        PageFrame victim = ClaimVictim(partition) ?? throw new BufferPoolFullException(Capacity);
         if (victim.IsDirty)
         {
             WriteBack(victim);
@@ -300,43 +353,45 @@ public sealed class BufferPool : IBufferPool
         return victim;
     }
 
-    private static PageFrame? FindEvictable(Partition partition)
+    /// <summary>Finds the least recently used frame nobody pins, and claims it so that no reader can pin it meanwhile.</summary>
+    private static PageFrame? ClaimVictim(Partition partition)
     {
         for (LinkedListNode<PageFrame>? node = partition.Lru.Last; node is not null; node = node.Previous)
         {
-            if (node.Value.PinCount == 0 && !node.Value.TxDirty)
+            PageFrame frame = node.Value;
+            if (Interlocked.CompareExchange(ref frame.PinCount, Claimed, 0) != 0)
             {
-                return node.Value;
+                continue;
             }
+
+            if (frame.TxDirty)
+            {
+                Volatile.Write(ref frame.PinCount, 0);
+                continue;
+            }
+
+            return frame;
         }
 
         return null;
     }
 
-    /// <summary>
-    /// Moves a frame to the hot end of the LRU list. Only every fourth hit does it: the list is shared by all readers
-    /// of the partition, and approximate recency is enough to keep hot pages away from eviction.
-    /// </summary>
     private static void Touch(Partition partition, PageFrame frame)
     {
-        if ((++frame.Hits & 3) != 0)
-        {
-            return;
-        }
-
         partition.Lru.Remove(frame.Node);
         partition.Lru.AddFirst(frame.Node);
     }
 
+    /// <summary>Takes a claimed frame out of its partition. The frame stays claimed until it is loaded again.</summary>
     private static void Remove(Partition partition, PageFrame frame)
     {
-        partition.Cached.Remove(frame.PageId);
+        partition.Cached.TryRemove(frame.PageId, out _);
         partition.Lru.Remove(frame.Node);
         frame.HasSnapshot = false;
         frame.TxDirty = false;
     }
 
-    /// <summary>The frames and index of one slice of the pool. Its lock guards everything in it.</summary>
+    /// <summary>The frames and index of one slice of the pool. Its lock guards loading, eviction and the LRU list.</summary>
     private sealed class Partition
     {
         public Partition(int capacity)
@@ -348,7 +403,7 @@ public sealed class BufferPool : IBufferPool
 
         public object Gate { get; } = new();
 
-        public Dictionary<long, PageFrame> Cached { get; } = new();
+        public ConcurrentDictionary<long, PageFrame> Cached { get; } = new();
 
         public LinkedList<PageFrame> Lru { get; } = new();
 
