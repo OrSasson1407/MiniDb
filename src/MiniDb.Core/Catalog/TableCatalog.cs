@@ -44,6 +44,24 @@ public sealed class TableCatalog
         AppendRecord(record);
     }
 
+    /// <summary>Replaces the stored definition of the table with the same name.</summary>
+    public void Replace(TableInfo table)
+    {
+        long pageId = _rootPage;
+        while (pageId != 0)
+        {
+            (bool replaced, long next) = TryReplaceOnPage(pageId, table);
+            if (replaced)
+            {
+                return;
+            }
+
+            pageId = next;
+        }
+
+        throw new InvalidOperationException($"Table '{table.Schema.Name}' is not in the catalog.");
+    }
+
     public TableInfo? Find(string name) => All().FirstOrDefault(t => t.Schema.Name == name);
 
     public IEnumerable<TableInfo> All()
@@ -59,6 +77,25 @@ public sealed class TableCatalog
 
             pageId = next;
         }
+    }
+
+    private (bool Replaced, long Next) TryReplaceOnPage(long pageId, TableInfo table)
+    {
+        using PinnedPage page = _pool.Pin(pageId);
+        SlottedPage sp = SlottedPage.Open(page.Data);
+        for (int slot = 0; slot < sp.SlotCount; slot++)
+        {
+            ReadOnlySpan<byte> bytes = sp.Read(slot);
+            if (!bytes.IsEmpty && TableInfoCodec.Decode(bytes).Schema.Name == table.Schema.Name)
+            {
+                sp.Delete(slot);
+                page.MarkDirty();
+                AppendRecord(TableInfoCodec.Encode(table));
+                return (true, 0);
+            }
+        }
+
+        return (false, sp.NextPage);
     }
 
     private (List<TableInfo> Tables, long Next) ReadPage(long pageId)

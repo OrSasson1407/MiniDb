@@ -19,6 +19,9 @@ internal static class TableInfoCodec
                 writer.Write(column);
                 writer.Write(root);
             }
+
+            writer.Write(table.HeapRoot);
+            writer.Write(table.HeapTail);
         }
 
         return stream.ToArray();
@@ -37,7 +40,9 @@ internal static class TableInfoCodec
             indexRoots.Add(reader.ReadString(), reader.ReadInt64());
         }
 
-        return new TableInfo(schema, primaryKeyRoot, indexRoots);
+        long heapRoot = reader.ReadInt64();
+        long heapTail = reader.ReadInt64();
+        return new TableInfo(schema, primaryKeyRoot, indexRoots, heapRoot, heapTail);
     }
 
     private static void WriteSchema(BinaryWriter writer, TableSchema schema)

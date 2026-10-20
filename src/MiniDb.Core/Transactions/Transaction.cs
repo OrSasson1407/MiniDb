@@ -21,6 +21,9 @@ public sealed class Transaction : IDisposable
 
     public long Id { get; }
 
+    /// <summary>True once the transaction has been committed or rolled back.</summary>
+    public bool IsFinished => _finished;
+
     public void WritePage(long pageId, ReadOnlySpan<byte> data)
     {
         EnsureActive();
