@@ -81,4 +81,42 @@ internal static class BenchmarkData
         SqliteConnection.ClearAllPools();
         Directory.Delete(directory, recursive: true);
     }
+
+    /// <summary>Default options, as a user would open the database: a 256-page (1 MB) buffer pool.</summary>
+    public static MiniDatabase OpenDefaultMiniDb(string path)
+    {
+        var db = MiniDatabase.Open(path);
+        db.CreateTable(UsersSchema());
+        return db;
+    }
+
+    /// <summary>Loads in chunks, one transaction per chunk, so the default buffer pool holds each chunk.</summary>
+    public static void LoadMiniDbChunked(MiniDatabase db, int rows, int chunk = 2_000)
+    {
+        for (int start = 0; start < rows; start += chunk)
+        {
+            Table users = db.GetTable("users");
+            using Transaction transaction = db.BeginTransaction();
+            for (long id = start; id < Math.Min(start + chunk, rows); id++)
+            {
+                users.Insert(new object?[] { id, NameFor(id), ScoreFor(id) });
+            }
+
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>SQLite in write-ahead-log mode with full synchronous writes, the usual durable setup.</summary>
+    public static SqliteConnection OpenWalSqlite(string path)
+    {
+        var connection = new SqliteConnection($"Data Source={path}");
+        connection.Open();
+        using SqliteCommand pragma = connection.CreateCommand();
+        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;";
+        pragma.ExecuteNonQuery();
+        using SqliteCommand create = connection.CreateCommand();
+        create.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score INTEGER NOT NULL)";
+        create.ExecuteNonQuery();
+        return connection;
+    }
 }

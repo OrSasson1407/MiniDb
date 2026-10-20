@@ -20,16 +20,18 @@ internal sealed class EngineSet : IDisposable
     {
         Directory = System.IO.Directory.CreateTempSubdirectory("bench-cmp-").FullName;
 
-        MiniDb = BenchmarkData.OpenFreshMiniDb(Path.Combine(Directory, "bench.mdb"));
+        MiniDb = BenchmarkData.OpenDefaultMiniDb(Path.Combine(Directory, "bench.mdb"));
         Users = MiniDb.GetTable("users");
 
-        Sqlite = BenchmarkData.OpenFreshSqlite(Path.Combine(Directory, "bench.sqlite"));
+        Sqlite = BenchmarkData.OpenWalSqlite(Path.Combine(Directory, "bench.sqlite"));
 
         LiteDb = new LiteDatabase(Path.Combine(Directory, "bench.litedb"));
         LiteUsers = LiteDb.GetCollection<LiteDocument>("users");
 
         MongoDb = MongoClient.GetDatabase(MongoDatabaseName);
-        MongoUsers = MongoDb.GetCollection<MongoDocument>(_mongoCollectionName);
+        MongoUsers = MongoDb.GetCollection<MongoDocument>(
+            _mongoCollectionName,
+            new MongoCollectionSettings { WriteConcern = new WriteConcern(1, journal: true) });
     }
 
     public string Directory { get; }
@@ -65,7 +67,7 @@ internal sealed class EngineSet : IDisposable
     /// <summary>Loads the same rows into every engine.</summary>
     public void LoadAll(int rows)
     {
-        BenchmarkData.LoadMiniDb(MiniDb, rows);
+        BenchmarkData.LoadMiniDbChunked(MiniDb, rows);
         BenchmarkData.LoadSqlite(Sqlite, rows);
         LiteUsers.InsertBulk(Enumerable.Range(0, rows).Select(i => LiteDoc(i)));
         MongoUsers.InsertMany(Enumerable.Range(0, rows).Select(i => MongoDoc(i)));

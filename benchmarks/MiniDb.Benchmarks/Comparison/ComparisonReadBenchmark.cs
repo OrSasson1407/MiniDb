@@ -60,6 +60,8 @@ public class ComparisonLookupBenchmark
     [Benchmark(OperationsPerInvoke = LookupsPerInvoke)]
     public object? SqliteLookup()
     {
+        using SqliteTransaction transaction = _engines.Sqlite.BeginTransaction();
+        _sqliteLookup.Transaction = transaction;
         object? name = null;
         foreach (long key in _keys)
         {
@@ -67,6 +69,7 @@ public class ComparisonLookupBenchmark
             name = _sqliteLookup.ExecuteScalar();
         }
 
+        transaction.Commit();
         return name;
     }
 
@@ -151,8 +154,10 @@ public class ComparisonScanBenchmark
     [Benchmark]
     public int MongoDbFilteredScan() => CountMongo(Builders<MongoDocument>.Filter.Eq("score", 7));
 
-    private static int CountReader(SqliteCommand command)
+    private int CountReader(SqliteCommand command)
     {
+        using SqliteTransaction transaction = _engines.Sqlite.BeginTransaction();
+        command.Transaction = transaction;
         using SqliteDataReader reader = command.ExecuteReader();
         int count = 0;
         while (reader.Read())
@@ -160,6 +165,7 @@ public class ComparisonScanBenchmark
             count++;
         }
 
+        transaction.Commit();
         return count;
     }
 
