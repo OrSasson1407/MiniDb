@@ -85,4 +85,21 @@ public class TableCatalogTests
 
         Assert.Null(catalog.Find("missing"));
     }
+
+    [Fact]
+    public void RepeatedReplace_DoesNotGrowTheStore()
+    {
+        var store = NewStore();
+        var pool = new BufferPool(store);
+        var catalog = new TableCatalog(pool, TableCatalog.CreateRoot(pool));
+        catalog.Create(UsersTable());
+        long pagesBefore = store.PageCount;
+
+        for (int i = 0; i < 500; i++)
+        {
+            catalog.Replace(UsersTable());
+        }
+
+        Assert.Equal(pagesBefore, store.PageCount);
+    }
 }

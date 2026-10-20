@@ -18,6 +18,10 @@ public static class HeaderCodec
 
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("MINIDB01");
 
+    /// <summary>True if the first bytes of a file carry the MiniDb magic.</summary>
+    public static bool HasMagic(ReadOnlySpan<byte> bytes) =>
+        bytes.Length >= Magic.Length && bytes[..Magic.Length].SequenceEqual(Magic);
+
     public static void Write(DatabaseHeader header, Span<byte> page)
     {
         page.Clear();

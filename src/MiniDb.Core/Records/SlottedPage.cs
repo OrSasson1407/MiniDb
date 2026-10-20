@@ -11,7 +11,7 @@ public readonly ref struct SlottedPage
 {
     public const int HeaderSize = 25;
     public const int SlotSize = 4;
-    public const int MaxRecordSize = PageConstants.PageSize - HeaderSize - SlotSize;
+    public const int MaxRecordSize = PageConstants.UsableSize - HeaderSize - SlotSize;
 
     private const int TypeOffset = 0;
     private const int PageIdOffset = 1;
@@ -32,7 +32,7 @@ public readonly ref struct SlottedPage
         page.Clear();
         page[TypeOffset] = (byte)type;
         BinaryPrimitives.WriteInt64LittleEndian(page[PageIdOffset..], pageId);
-        BinaryPrimitives.WriteUInt16LittleEndian(page[FreeOffset..], PageConstants.PageSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(page[FreeOffset..], PageConstants.UsableSize);
         return new SlottedPage(page);
     }
 
@@ -77,6 +77,20 @@ public readonly ref struct SlottedPage
         CheckSlot(slot);
         (int offset, int length) = ReadSlot(slot);
         return length == 0 ? ReadOnlySpan<byte>.Empty : _page.Slice(offset, length);
+    }
+
+    /// <summary>Replaces the record in a live slot with one no longer than the current record.</summary>
+    public void Overwrite(int slot, ReadOnlySpan<byte> record)
+    {
+        CheckSlot(slot);
+        (int offset, int length) = ReadSlot(slot);
+        if (length == 0 || record.Length > length)
+        {
+            throw new ArgumentException("The new record must fit in the slot's current length.", nameof(record));
+        }
+
+        record.CopyTo(_page[offset..]);
+        WriteSlot(slot, offset, record.Length);
     }
 
     /// <summary>Marks the record in <paramref name="slot"/> as deleted. Returns false if it was already deleted.</summary>

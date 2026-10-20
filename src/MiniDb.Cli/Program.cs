@@ -18,6 +18,11 @@ try
     ReplLoop.Run(db);
     return 0;
 }
+catch (IOException ex)
+{
+    Console.Error.WriteLine($"Error: {ex.Message}");
+    return 1;
+}
 catch (MiniDbException ex)
 {
     Console.Error.WriteLine($"Error: {ex.Message}");

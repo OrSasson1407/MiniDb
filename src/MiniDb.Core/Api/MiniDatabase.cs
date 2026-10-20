@@ -40,8 +40,14 @@ public sealed class MiniDatabase : IDisposable
     public static MiniDatabase Open(string path, DatabaseOptions? options = null)
     {
         options ??= new DatabaseOptions();
-        bool isNew = !File.Exists(path);
-        IPageStore store = new FilePageStore(path, create: isNew);
+        bool exists = File.Exists(path);
+        bool isNew = !exists || new FileInfo(path).Length == 0;
+        if (exists && !isNew)
+        {
+            ValidateMagic(path);
+        }
+
+        IPageStore store = new FilePageStore(path, create: !exists);
         WriteAheadLog? wal = null;
         try
         {
@@ -102,7 +108,14 @@ public sealed class MiniDatabase : IDisposable
     public QueryResult Execute(string sql)
     {
         EnsureOpen();
-        return SqlEngine.Run(this, sql);
+        try
+        {
+            return SqlEngine.Run(this, sql);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new MiniDbException(ex.Message);
+        }
     }
 
     public Table GetTable(string name)
@@ -154,9 +167,18 @@ public sealed class MiniDatabase : IDisposable
     internal T InWriteTransaction<T>(Func<T> action)
     {
         EnsureOpen();
-        if (_current is { IsFinished: false })
+        if (_current is { IsFinished: false } open)
         {
-            return action();
+            try
+            {
+                return action();
+            }
+            catch
+            {
+                // A statement that fails halfway cannot be committed; abort the whole transaction.
+                open.Rollback();
+                throw;
+            }
         }
 
         using Transaction transaction = _manager.Begin();
@@ -164,6 +186,17 @@ public sealed class MiniDatabase : IDisposable
         T result = action();
         transaction.Commit();
         return result;
+    }
+
+    private static void ValidateMagic(string path)
+    {
+        var start = new byte[8];
+        using FileStream stream = File.OpenRead(path);
+        int read = stream.ReadAtLeast(start, start.Length, throwOnEndOfStream: false);
+        if (read < start.Length || !HeaderCodec.HasMagic(start))
+        {
+            throw new InvalidDatabaseException("magic mismatch, the file is not a MiniDb database");
+        }
     }
 
     private static long CreateCatalog(IPageStore store, BufferPool pool, TransactionManager manager, DatabaseHeader header)

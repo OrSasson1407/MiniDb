@@ -84,4 +84,19 @@ public class BufferPoolTests
         using var reread = pool.Pin(id);
         Assert.Equal(0, reread.Data[0]);
     }
+
+    [Fact]
+    public void FailedLoad_DoesNotShrinkThePool()
+    {
+        var store = new MemoryPageStore();
+        store.AllocatePage();
+        using var pool = new BufferPool(store, capacity: 1);
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            Assert.Throws<PageOutOfRangeException>(() => pool.Pin(99));
+        }
+
+        using (pool.Pin(0)) { }
+    }
 }

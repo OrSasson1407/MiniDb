@@ -53,6 +53,7 @@ public sealed class BufferPool : IBufferPool
     {
         foreach (PageFrame frame in _cached.Values.Where(f => f.IsDirty))
         {
+            PageChecksum.Stamp(frame.Data);
             _store.WritePage(frame.PageId, frame.Data);
             frame.IsDirty = false;
         }
@@ -91,7 +92,17 @@ public sealed class BufferPool : IBufferPool
     private PageFrame LoadFrame(long pageId)
     {
         PageFrame frame = TakeFrame();
-        _store.ReadPage(pageId, frame.Data);
+        try
+        {
+            _store.ReadPage(pageId, frame.Data);
+            PageChecksum.Verify(frame.Data, pageId);
+        }
+        catch
+        {
+            _freeFrames.Push(frame);
+            throw;
+        }
+
         frame.PageId = pageId;
         frame.IsDirty = false;
         _cached.Add(pageId, frame);

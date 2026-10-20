@@ -116,4 +116,23 @@ public class TransactionTests : IDisposable
         store.ReadPage(1, read);
         Assert.Equal(9, read[0]);
     }
+
+    [Fact]
+    public void CommittedPages_AreFlushed_SoLaterReadsFitInSmallPool()
+    {
+        var store = NewStoreWithPages(4);
+        var pool = new BufferPool(store, capacity: 2);
+        using var wal = new WriteAheadLog(_walPath);
+        var manager = new TransactionManager(store, pool, wal);
+
+        using (Transaction tx = manager.Begin())
+        {
+            tx.WritePage(1, PageWith(1));
+            tx.WritePage(2, PageWith(2));
+            tx.Commit();
+        }
+
+        using (pool.Pin(3)) { }
+        using (pool.Pin(4)) { }
+    }
 }

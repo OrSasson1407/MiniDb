@@ -144,4 +144,49 @@ public class MiniDatabaseTests : IDisposable
 
         Assert.Throws<InvalidDatabaseException>(() => MiniDatabase.Open(DatabasePath));
     }
+
+    [Fact]
+    public void FailedStatementInsideTransaction_AbortsTheWholeTransaction()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.CreateTable(UsersSchema());
+        Table users = db.GetTable("users");
+        using var tx = db.BeginTransaction();
+        users.Insert(User(1, "a"));
+
+        Assert.Throws<DuplicateKeyException>(() => users.Insert(User(1, "b")));
+
+        Assert.True(tx.IsFinished);
+        Assert.Null(users.Get(1));
+    }
+
+    [Fact]
+    public void SchemaErrorsFromSql_ComeOutAsMiniDbException()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+
+        Assert.Throws<MiniDbException>(() => db.Execute("CREATE TABLE t (id BIGINT PRIMARY KEY, s VARCHAR(0))"));
+        Assert.Throws<MiniDbException>(() => db.Execute("CREATE TABLE t (id INT PRIMARY KEY)"));
+        Assert.Throws<MiniDbException>(() => db.Execute("CREATE TABLE t (id BIGINT PRIMARY KEY, id INT)"));
+    }
+
+    [Fact]
+    public void ForeignFile_IsRejected_WithoutLeavingALogBehind()
+    {
+        File.WriteAllBytes(DatabasePath, new byte[PageConstants.PageSize * 2]);
+
+        Assert.Throws<InvalidDatabaseException>(() => MiniDatabase.Open(DatabasePath));
+        Assert.False(File.Exists(DatabasePath + ".wal"));
+    }
+
+    [Fact]
+    public void EmptyExistingFile_IsInitializedAsANewDatabase()
+    {
+        File.WriteAllBytes(DatabasePath, Array.Empty<byte>());
+
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.CreateTable(UsersSchema());
+
+        Assert.NotNull(db.GetTable("users"));
+    }
 }

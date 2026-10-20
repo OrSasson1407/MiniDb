@@ -88,9 +88,18 @@ public sealed class TableCatalog
             ReadOnlySpan<byte> bytes = sp.Read(slot);
             if (!bytes.IsEmpty && TableInfoCodec.Decode(bytes).Schema.Name == table.Schema.Name)
             {
-                sp.Delete(slot);
+                byte[] record = TableInfoCodec.Encode(table);
+                if (record.Length <= bytes.Length)
+                {
+                    sp.Overwrite(slot, record);
+                }
+                else
+                {
+                    sp.Delete(slot);
+                    AppendRecord(record);
+                }
+
                 page.MarkDirty();
-                AppendRecord(TableInfoCodec.Encode(table));
                 return (true, 0);
             }
         }

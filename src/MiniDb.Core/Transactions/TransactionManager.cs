@@ -53,28 +53,17 @@ public sealed class TransactionManager
         return new Transaction(this, _pool, _nextTransactionId++);
     }
 
-    /// <summary>Copies every changed page into the WAL, then a commit record, and makes them durable.</summary>
+    /// <summary>
+    /// Copies every changed page into the WAL, then a commit record, and makes them durable.
+    /// Once the commit record is durable, the changed pages are also written to the data file.
+    /// </summary>
     internal void Commit(Transaction transaction)
     {
         try
         {
-            foreach (long pageId in _pool.TrackedPages.ToArray())
-            {
-                _wal.Append(new WalFrame(transaction.Id, WalFrameType.PageImage, pageId, _pool.ReadCopy(pageId)));
-            }
-
-            _wal.Append(new WalFrame(transaction.Id, WalFrameType.Commit, 0, Array.Empty<byte>()));
-            if (_fsyncOnCommit)
-            {
-                _wal.Sync();
-            }
-
+            WriteCommitRecords(transaction);
             _pool.ClearTracking();
-        }
-        catch
-        {
-            DiscardChanges();
-            throw;
+            _pool.FlushAll();
         }
         finally
         {
@@ -84,6 +73,33 @@ public sealed class TransactionManager
         if (_wal.Length > _checkpointThresholdBytes)
         {
             Checkpoint();
+        }
+    }
+
+    private void WriteCommitRecords(Transaction transaction)
+    {
+        long mark = _wal.Length;
+        try
+        {
+            foreach (long pageId in _pool.TrackedPages.ToArray())
+            {
+                byte[] image = _pool.ReadCopy(pageId);
+                PageChecksum.Stamp(image);
+                _wal.Append(new WalFrame(transaction.Id, WalFrameType.PageImage, pageId, image));
+            }
+
+            _wal.Append(new WalFrame(transaction.Id, WalFrameType.Commit, 0, Array.Empty<byte>()));
+            if (_fsyncOnCommit)
+            {
+                _wal.Sync();
+            }
+        }
+        catch
+        {
+            // Cut off the partly written commit so recovery never replays it.
+            _wal.TruncateTo(mark);
+            DiscardChanges();
+            throw;
         }
     }
 

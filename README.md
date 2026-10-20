@@ -32,11 +32,11 @@ DELETE FROM users WHERE id = 1
 dotnet test tests/MiniDb.Tests
 ```
 
-85 בדיקות: שכבה לשכבה, כולל בדיקת fuzz של ה-B+ tree מול `SortedDictionary`, בדיקות התאוששות מקריסה ו-torn tail, ובדיקות SQL מקצה לקצה.
+96 בדיקות: שכבה לשכבה, כולל בדיקת fuzz של ה-B+ tree מול `SortedDictionary`, בדיקות התאוששות מקריסה ו-torn tail, ובדיקות SQL מקצה לקצה.
 
 ## מדידות
 
-BenchmarkDotNet, Release, על Windows 11, .NET 8. המדידה מול SQLite (Microsoft.Data.Sqlite 9.0) כנקודת ייחוס.
+המספרים נמדדו לפני תיקוני הביקורת הסופית (checksum לדפים, כתיבה ליעד אחרי commit, עדכון קטלוג במקום). כדי לעדכן את המספרים יש להריץ שוב את המדידה. BenchmarkDotNet, Release, על Windows 11, .NET 8. המדידה מול SQLite (Microsoft.Data.Sqlite 9.0) כנקודת ייחוס.
 
 ```bash
 dotnet run -c Release --project benchmarks/MiniDb.Benchmarks -- --filter "*"

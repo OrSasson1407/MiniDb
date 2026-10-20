@@ -38,11 +38,17 @@ public sealed class WriteAheadLog : IDisposable
         }
     }
 
+    /// <summary>Cuts the log back to <paramref name="length"/> bytes, discarding a partly written commit.</summary>
+    public void TruncateTo(long length)
+    {
+        RandomAccess.SetLength(_handle, length);
+        _length = length;
+    }
+
     /// <summary>Empties the log. Called after a checkpoint has copied every committed page to the data file.</summary>
     public void Truncate()
     {
-        RandomAccess.SetLength(_handle, 0);
-        _length = 0;
+        TruncateTo(0);
         Sync();
     }
 

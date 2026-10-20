@@ -19,6 +19,11 @@ internal static class SqlEngine
 
     private static QueryResult CreateTable(MiniDatabase db, CreateTableStatement statement)
     {
+        if (statement.Columns.Select(c => c.Name).Distinct(StringComparer.Ordinal).Count() != statement.Columns.Count)
+        {
+            throw new MiniDbException("A column name appears more than once in CREATE TABLE.");
+        }
+
         var keys = statement.Columns.Select((column, index) => (column, index)).Where(c => c.column.IsPrimaryKey).ToList();
         if (keys.Count != 1)
         {
