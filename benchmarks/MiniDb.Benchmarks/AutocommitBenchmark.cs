@@ -38,14 +38,15 @@ public class AutocommitBenchmark
 
         using (SqliteCommand create = _sqlite.CreateCommand())
         {
-            create.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)";
+            create.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score INTEGER NOT NULL)";
             create.ExecuteNonQuery();
         }
 
         _insert = _sqlite.CreateCommand();
-        _insert.CommandText = "INSERT INTO users (id, name) VALUES ($id, $name)";
+        _insert.CommandText = "INSERT INTO users (id, name, score) VALUES ($id, $name, $score)";
         _insert.Parameters.Add("$id", SqliteType.Integer);
         _insert.Parameters.Add("$name", SqliteType.Text);
+        _insert.Parameters.Add("$score", SqliteType.Integer);
     }
 
     [IterationCleanup]
@@ -62,7 +63,7 @@ public class AutocommitBenchmark
     {
         for (long id = 0; id < Inserts; id++)
         {
-            _users.Insert(new object?[] { id, BenchmarkData.NameFor(id) });
+            _users.Insert(new object?[] { id, BenchmarkData.NameFor(id), BenchmarkData.ScoreFor(id) });
         }
     }
 
@@ -73,6 +74,7 @@ public class AutocommitBenchmark
         {
             _insert.Parameters["$id"].Value = id;
             _insert.Parameters["$name"].Value = BenchmarkData.NameFor(id);
+            _insert.Parameters["$score"].Value = BenchmarkData.ScoreFor(id);
             _insert.ExecuteNonQuery();
         }
     }

@@ -4,8 +4,8 @@ using System.Text;
 namespace MiniDb.Records;
 
 /// <summary>
-/// Converts a row to bytes and back. Columns are written in schema order with no padding:
-/// Int32 4 bytes, Int64 8, Double 8, Bool 1, String a UInt16 length followed by UTF-8 bytes.
+/// Converts a row to bytes and back. Fixed-width columns come first, in schema order, so each has a known offset;
+/// String columns follow, each as a UInt16 length and UTF-8 bytes. Sizes: Int32 4, Int64 8, Double 8, Bool 1.
 /// Null values are not supported in version 1.
 /// </summary>
 public static class RecordCodec
@@ -26,27 +26,54 @@ public static class RecordCodec
             throw new ArgumentException($"Destination holds {dest.Length} bytes, the record needs {size}.", nameof(dest));
         }
 
-        int offset = 0;
+        int stringCursor = schema.FixedSize;
         for (int i = 0; i < schema.Columns.Count; i++)
         {
-            offset += WriteValue(values[i]!, dest[offset..]);
+            int fixedOffset = schema.FixedOffsets[i];
+            if (fixedOffset >= 0)
+            {
+                WriteValue(values[i]!, dest[fixedOffset..]);
+            }
+            else
+            {
+                stringCursor += WriteValue(values[i]!, dest[stringCursor..]);
+            }
         }
 
-        return offset;
+        return stringCursor;
     }
 
     public static object?[] Decode(TableSchema schema, ReadOnlySpan<byte> src)
     {
         var values = new object?[schema.Columns.Count];
-        int offset = 0;
+        int stringCursor = schema.FixedSize;
         for (int i = 0; i < values.Length; i++)
         {
-            values[i] = ReadValue(schema.Columns[i].Type, src[offset..], out int used);
-            offset += used;
+            ColumnDefinition column = schema.Columns[i];
+            int fixedOffset = schema.FixedOffsets[i];
+            if (fixedOffset >= 0)
+            {
+                values[i] = ReadValue(column.Type, src[fixedOffset..], out _);
+            }
+            else
+            {
+                values[i] = ReadValue(column.Type, src[stringCursor..], out int used);
+                stringCursor += used;
+            }
         }
 
         return values;
     }
+
+    /// <summary>Byte width of a fixed-width column type, or 0 for String.</summary>
+    internal static int FixedWidthOf(ColumnType type) => type switch
+    {
+        ColumnType.Int32 => sizeof(int),
+        ColumnType.Int64 => sizeof(long),
+        ColumnType.Double => sizeof(double),
+        ColumnType.Bool => sizeof(byte),
+        _ => 0,
+    };
 
     /// <summary>Number of bytes <see cref="Encode"/> will write for these values. Also validates them.</summary>
     public static int EncodedSize(TableSchema schema, object?[] values)
