@@ -8,10 +8,11 @@
 - **Database**: דף כותרת עם magic `MINIDB01`, ובדיקת שלמות בפתיחה.
 - **Records**: סריאליזציה של שורות (Int32, Int64, Double, Bool, String ב-UTF-8). עמודות ברוחב קבוע באות ראשונות, כך שכל אחת נקראת ממיקום ידוע. ה-API מחזיר `RowView` שמפענח עמודה רק לפי דרישה.
 - **Catalog**: הגדרות טבלאות, נשמרות בדפים עצמם, עם מטמון בזיכרון.
-- **Index**: B+ tree על מפתח ראשי `Int64` (טבלה מקובצת: השורות בתוך העלים), ואינדקסים משניים על עמודות `INT`/`BIGINT` דרך `CREATE INDEX ON טבלה (עמודה)`.
+- **Index**: B+ tree על מפתח ראשי `Int64` (טבלה מקובצת: השורות בתוך העלים), ואינדקסים משניים על עמודות `INT`, `BIGINT` ו-`VARCHAR` דרך `CREATE INDEX ON טבלה (עמודה)`. אינדקס מחרוזות שומר את 4 התווים הראשונים, ולכן כל שורה שנמצאה נבדקת שוב במלואה.
 - **Transactions**: WAL שרושם רק את הבתים ששונו בדפים (page delta), commit עם fsync (אפשר לכבות), checkpoint, והתאוששות מקריסה (טרנזקציות ללא commit מתעלמות, וקרע בסוף היומן נחתך).
 - **API**: `MiniDatabase`, `Table`, `RowView` בקוד C#.
-- **SQL**: `CREATE TABLE`, `INSERT`, `SELECT ... WHERE ... LIMIT`, `DELETE ... WHERE`, עם planner שבוחר בין חיפוש נקודתי, סריקת טווח ב-B+ tree, וסריקה מלאה. סינון נעשה על `RowView`, כך שכל השוואה קוראת רק את העמודה שבתנאי.
+- **SQL**: `CREATE TABLE`, `CREATE INDEX`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`. ב-`SELECT`: `WHERE` עם `AND`/`OR` וסוגריים, `INNER JOIN` (אחד או יותר), `GROUP BY` עם `COUNT`, `SUM`, `MIN`, `MAX`, `AVG`, `ORDER BY` עם `ASC`/`DESC` (ועם `LIMIT` שמחזיק רק את השורות הראשונות בערימה), ו-`LIMIT`.
+- **Planner**: בוחר את הגישה הזולה ביותר מבין התנאים שחייבים להתקיים (חיפוש נקודתי, טווח מפתח, טווח אינדקס, או סריקה). טווח אינדקס שמחזיר יותר מ-1,024 שורות מוותר לסריקה מלאה. סינון נעשה על `RowView`, כך שכל השוואה קוראת רק את העמודה שבתנאי. ORDER BY מדלג על מיון כש-B+ tree כבר מחזיר את השורות בסדר הנכון.
 
 ## הרצה
 
@@ -23,6 +24,9 @@ dotnet run --project src/MiniDb.Cli -- shop.mdb
 CREATE TABLE users (id BIGINT PRIMARY KEY, name VARCHAR(50))
 INSERT INTO users VALUES (1, 'שלום')
 SELECT * FROM users WHERE id >= 1 LIMIT 10
+SELECT name, COUNT(*) FROM users GROUP BY name ORDER BY name DESC
+UPDATE users SET name = 'דנה' WHERE id = 1 OR (id > 10 AND id < 20)
+SELECT users.name, orders.total FROM users JOIN orders ON users.id = orders.user_id
 DELETE FROM users WHERE id = 1
 ```
 
@@ -32,7 +36,7 @@ DELETE FROM users WHERE id = 1
 dotnet test tests/MiniDb.Tests
 ```
 
-141 בדיקות: שכבה לשכבה, כולל בדיקת fuzz של ה-B+ tree מול `SortedDictionary`, בדיקות התאוששות מקריסה ו-torn tail, בדיקות checksum, בדיקות SQL מקצה לקצה, ובדיקות על נתונים גדולים מהמאגר.
+162 בדיקות: שכבה לשכבה, כולל בדיקת fuzz של ה-B+ tree מול `SortedDictionary`, בדיקות התאוששות מקריסה ו-torn tail, בדיקות checksum, בדיקות SQL מקצה לקצה, ובדיקות על נתונים גדולים מהמאגר.
 
 ## השוואה למסדי נתונים אחרים
 
@@ -105,10 +109,12 @@ benchmarks/MiniDb.Benchmarks/   מדידות מול SQLite, LiteDB ו-MongoDB
 ## מגבלות ידועות
 
 - כותב אחד בכל רגע; קוראים מחכים לכותב (אין MVCC או snapshots). אין לכתוב מאותו חוט בזמן שהוא עובר על `Scan` עצל: הקריאה מחזיקה נעילה והכתיבה נכשלת ב-`LockRecursionException`.
-- חיפוש דרך אינדקס משני עולה בערך מיקרו-שנייה לכל שורה שמוחזרת (ירידה שנייה לעץ הראשי), ולכן אינדקס עוזר רק כשהוא מחזיר אחוזים בודדים מהטבלה. המתכנן מוותר עליו מעל 1,024 התאמות.
-- אינדקס משני אפשרי רק על עמודות INT ו-BIGINT.
+- SQL: אין `LEFT JOIN`, `HAVING`, `NULL`, `DISTINCT`, ותת-שאילתות. `UPDATE` ו-`DELETE` דורשים `WHERE`. אין `!=`.
+- JOIN רק `INNER`, עם שוויון בין שתי עמודות. הטבלה השמאלית נסרקת תמיד במלואה, ואין סידור מחדש של טבלאות.
+- ב-`GROUP BY` אפשר לבחור רק עמודות מתוך קבוצת ההקבצה או אגרגטים. אין ORDER BY על אגרגט עצמו; יש למיין לפי שם עמודה שמופיעה ב-SELECT.
+- אינדקס מחרוזות משווה לפי 4 התווים הראשונים בלבד. אם רוב השורות חולקות קידומת, המתכנן עובר לסריקה מלאה (מעל 1,024 התאמות).
 - מחיקה משאירה חורים בדפי הנתונים; אין compaction או VACUUM.
-- שינויים שלא נעשו commit לא נכתבים לקובץ הנתונים (no-steal). טרנזקציה שמשנה יותר דפים ממה שהמאגר מחזיק גורמת למאגר לגדול זמנית, עד פי 8 מהגודל שלו. מעבר לזה נזרקת `BufferPoolFullException`.
-- AllocatePage אינו טרנזקציוני: דפים שהוקצו בטרנזקציה שבוטלה נשארים מוקצים כאפסים.
+- טרנזקציה שמשנה יותר דפים ממה שהמאגר מחזיק גורמת למאגר לגדול זמנית, עד פי 8 מהגודל שלו. מעבר לזה נזרקת `BufferPoolFullException`.
+- דפים שנוספו לקובץ בטרנזקציה שבוטלה מוחזרים לרשימת הדפים הפנויים (ונשמרים בה בכותרת). אם המערכת קורסת בין הביטול להחזרה, הדפים האלה נשארים לא בשימוש עד שייבנה מחדש קובץ.
 - `FsyncOnCommit=false` מאיץ commits, אבל אחרי הפסקת חשמל ייתכן שיאבדו ה-commits האחרונים. הקובץ נשאר עקבי, כי היומן נכתב לדיסק לפני כל דף.
 - לא נבדק מול PostgreSQL (דורש סיסמה), ועמידות LiteDB לא אומתה.
