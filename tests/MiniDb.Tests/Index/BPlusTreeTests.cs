@@ -102,4 +102,23 @@ public class BPlusTreeTests
         Assert.Equal(count, tree.Range(0, count - 1).Count());
         Assert.Equal(12_345, tree.Find(12_345)!.Value.PageId);
     }
+
+    [Fact]
+    public void AscendingLoad_FillsLeavesCompletely()
+    {
+        var store = NewStore();
+        var pool = new BufferPool(store, capacity: 64);
+        var tree = BPlusTree.Create(pool);
+        for (long key = 0; key < 10_000; key++)
+        {
+            tree.Insert(key, new RowLocation(key, 0));
+            if (key % 1000 == 999)
+            {
+                pool.FlushAll();
+            }
+        }
+
+        pool.FlushAll();
+        Assert.True(store.PageCount < 75, $"used {store.PageCount} pages");
+    }
 }

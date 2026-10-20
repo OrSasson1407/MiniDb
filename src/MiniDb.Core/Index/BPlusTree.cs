@@ -34,8 +34,7 @@ public sealed class BPlusTree
 
     public RowLocation? Find(long key)
     {
-        long leafId = FindLeaf(key);
-        using PinnedPage page = _pool.Pin(leafId);
+        using PinnedPage page = FindLeafPinned(key);
         int index = LeafNode.LowerBound(page.Data, key);
         bool found = index < LeafNode.Count(page.Data) && LeafNode.KeyAt(page.Data, index) == key;
         return found ? LeafNode.LocationAt(page.Data, index) : null;
@@ -61,8 +60,7 @@ public sealed class BPlusTree
     /// <summary>Removes a key. Returns false if it was not present.</summary>
     public bool Delete(long key)
     {
-        long leafId = FindLeaf(key);
-        using PinnedPage page = _pool.Pin(leafId);
+        using PinnedPage page = FindLeafPinned(key);
         int index = LeafNode.LowerBound(page.Data, key);
         if (index >= LeafNode.Count(page.Data) || LeafNode.KeyAt(page.Data, index) != key)
         {
@@ -122,6 +120,24 @@ public sealed class BPlusTree
         }
     }
 
+    /// <summary>Descends to the leaf for <paramref name="key"/> and returns it still pinned. Internal nodes are released on the way down.</summary>
+    private PinnedPage FindLeafPinned(long key)
+    {
+        long pageId = RootPage;
+        while (true)
+        {
+            PinnedPage page = _pool.Pin(pageId);
+            if (LeafNode.IsLeaf(page.Data))
+            {
+                return page;
+            }
+
+            long child = InternalNode.ChildAt(page.Data, InternalNode.ChildIndexFor(page.Data, key));
+            page.Dispose();
+            pageId = child;
+        }
+    }
+
     private (List<LeafNode.Entry> Entries, long Next) ReadLeaf(long leafId)
     {
         using PinnedPage page = _pool.Pin(leafId);
@@ -163,10 +179,13 @@ public sealed class BPlusTree
     private Split SplitLeaf(PinnedPage page, long key, RowLocation location)
     {
         List<LeafNode.Entry> entries = LeafNode.ReadAll(page.Data);
-        entries.Insert(entries.Count(e => e.Key < key), new LeafNode.Entry(key, location));
+        int index = entries.Count(e => e.Key < key);
+        entries.Insert(index, new LeafNode.Entry(key, location));
 
         long oldNext = LeafNode.Next(page.Data);
-        int half = entries.Count / 2;
+        // Appending to the rightmost leaf (ascending keys): keep the left leaf full rather than half-empty.
+        bool appendingToRightmost = oldNext == 0 && index == entries.Count - 1;
+        int half = appendingToRightmost ? entries.Count - 1 : entries.Count / 2;
         long newPageId = _pool.AllocatePage();
         using (PinnedPage right = _pool.Pin(newPageId))
         {

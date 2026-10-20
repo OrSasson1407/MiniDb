@@ -16,12 +16,9 @@ internal static class RowStore
     {
         byte[] record = EncodeRow(table.Schema, values);
         long key = (long)values[table.Schema.PrimaryKeyIndex]!;
+        // No separate lookup: a duplicate key makes tree.Insert throw, and the enclosing
+        // transaction rolls back the heap row that was already appended.
         var tree = BPlusTree.Open(pool, table.PrimaryKeyRoot);
-        if (tree.Find(key) is not null)
-        {
-            throw new DuplicateKeyException(key);
-        }
-
         (RowLocation location, long tail) = AppendRecord(pool, table.HeapTail, record);
         tree.Insert(key, location);
         return table with { PrimaryKeyRoot = tree.RootPage, HeapTail = tail };
@@ -52,19 +49,24 @@ internal static class RowStore
         return tree.Delete(key);
     }
 
-    /// <summary>Every live row, read page by page along the heap chain.</summary>
+    /// <summary>Every live row, read page by page along the heap chain. Holds at most one page pinned.</summary>
     public static IEnumerable<object?[]> Scan(BufferPool pool, TableInfo table)
     {
         long pageId = table.HeapRoot;
         while (pageId != 0)
         {
-            (List<object?[]> rows, long next) = ReadHeapPage(pool, table.Schema, pageId);
-            foreach (object?[] row in rows)
+            using PinnedPage page = pool.Pin(pageId);
+            int slots = SlotCount(page.Data);
+            for (int slot = 0; slot < slots; slot++)
             {
-                yield return row;
+                object?[]? row = ReadLiveSlot(page.Data, table.Schema, slot);
+                if (row is not null)
+                {
+                    yield return row;
+                }
             }
 
-            pageId = next;
+            pageId = NextPage(page.Data);
         }
     }
 
@@ -104,20 +106,13 @@ internal static class RowStore
         return bytes.IsEmpty ? null : RecordCodec.Decode(schema, bytes);
     }
 
-    private static (List<object?[]> Rows, long Next) ReadHeapPage(BufferPool pool, TableSchema schema, long pageId)
-    {
-        using PinnedPage page = pool.Pin(pageId);
-        SlottedPage sp = SlottedPage.Open(page.Data);
-        var rows = new List<object?[]>();
-        for (int slot = 0; slot < sp.SlotCount; slot++)
-        {
-            ReadOnlySpan<byte> bytes = sp.Read(slot);
-            if (!bytes.IsEmpty)
-            {
-                rows.Add(RecordCodec.Decode(schema, bytes));
-            }
-        }
+    private static int SlotCount(Span<byte> data) => SlottedPage.Open(data).SlotCount;
 
-        return (rows, sp.NextPage);
+    private static long NextPage(Span<byte> data) => SlottedPage.Open(data).NextPage;
+
+    private static object?[]? ReadLiveSlot(Span<byte> data, TableSchema schema, int slot)
+    {
+        ReadOnlySpan<byte> bytes = SlottedPage.Open(data).Read(slot);
+        return bytes.IsEmpty ? null : RecordCodec.Decode(schema, bytes);
     }
 }
