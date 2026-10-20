@@ -71,6 +71,18 @@ internal sealed class EngineSet : IDisposable
         BenchmarkData.LoadSqlite(Sqlite, rows);
         LiteUsers.InsertBulk(Enumerable.Range(0, rows).Select(i => LiteDoc(i)));
         MongoUsers.InsertMany(Enumerable.Range(0, rows).Select(i => MongoDoc(i)));
+
+        // Same secondary index on score in every engine, built after the load.
+        MiniDb.Execute("CREATE INDEX ON users (score)");
+        using (SqliteCommand index = Sqlite.CreateCommand())
+        {
+            index.CommandText = "CREATE INDEX idx_score ON users (score)";
+            index.ExecuteNonQuery();
+        }
+
+        LiteUsers.EnsureIndex("score");
+        MongoUsers.Indexes.CreateOne(new CreateIndexModel<MongoDocument>(
+            Builders<MongoDocument>.IndexKeys.Ascending("score")));
     }
 
     public void Dispose()

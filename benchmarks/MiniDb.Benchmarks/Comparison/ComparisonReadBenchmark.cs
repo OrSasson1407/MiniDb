@@ -143,7 +143,7 @@ public class ComparisonScanBenchmark
     public int MongoDbFullScan() => CountMongo(Builders<MongoDocument>.Filter.Empty);
 
     [Benchmark]
-    public int MiniDbFilteredScan() => _engines.Users.ScanViews(view => view.GetInt32(2) == 7).Count();
+    public int MiniDbFilteredScan() => _engines.MiniDb.Execute("SELECT id FROM users WHERE score = 7").Rows.Count;
 
     [Benchmark]
     public int SqliteFilteredScan() => CountReader(_sqliteFiltered);
