@@ -44,11 +44,22 @@ public sealed class Transaction : IDisposable
 
     public void Commit()
     {
+        long position = CommitWithoutWaiting();
+        _manager.AwaitDurable(position);
+    }
+
+    /// <summary>
+    /// Writes the commit records and releases the write lock (through <see cref="Finished"/>), but does not wait for the log
+    /// to reach the disk. Returns the log position to wait for with <see cref="AwaitDurable"/>. Splitting the two lets other
+    /// writers append while this commit waits for a shared sync.
+    /// </summary>
+    internal long CommitWithoutWaiting()
+    {
         EnsureActive();
         _finished = true;
         try
         {
-            _manager.Commit(this);
+            return _manager.CommitAppend(this);
         }
         finally
         {

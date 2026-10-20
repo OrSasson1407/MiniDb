@@ -212,6 +212,7 @@ public sealed class MiniDatabase : IDisposable
         _lock.EnterReadLock();
         try
         {
+            _manager.AwaitVisibleDurable();
             return read(state);
         }
         finally
@@ -231,6 +232,11 @@ public sealed class MiniDatabase : IDisposable
 
         try
         {
+            if (taken)
+            {
+                _manager.AwaitVisibleDurable();
+            }
+
             foreach (T row in rows())
             {
                 yield return row;
@@ -269,18 +275,32 @@ public sealed class MiniDatabase : IDisposable
             }
         }
 
-        _lock.EnterWriteLock();
+        // The write lock is released before the commit waits for the log to reach the disk, so other writers can append
+        // meanwhile and share the same sync. The pipeline count tells the committer that they are on their way.
+        _manager.EnterCommitPipeline();
         try
         {
-            using Transaction transaction = _manager.Begin();
-            _current = transaction;
-            T result = action(state);
-            transaction.Commit();
+            T result;
+            long position;
+            _lock.EnterWriteLock();
+            try
+            {
+                using Transaction transaction = _manager.Begin();
+                _current = transaction;
+                result = action(state);
+                position = transaction.CommitWithoutWaiting();
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+
+            _manager.AwaitDurable(position);
             return result;
         }
         finally
         {
-            _lock.ExitWriteLock();
+            _manager.LeaveCommitPipeline();
         }
     }
 

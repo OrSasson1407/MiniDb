@@ -10,6 +10,9 @@ public sealed class WriteAheadLog : IDisposable
     private readonly string _path;
     private long _length;
 
+    /// <summary>Log position of the start of the file. Grows at each checkpoint, so positions never repeat.</summary>
+    private long _basePosition;
+
     public WriteAheadLog(string path)
     {
         _path = path;
@@ -27,6 +30,12 @@ public sealed class WriteAheadLog : IDisposable
 
     /// <summary>Current size of the log file in bytes.</summary>
     public long Length => _length;
+
+    /// <summary>
+    /// Log position of the end of the records appended so far. Unlike <see cref="Length"/>, it never goes back: a checkpoint
+    /// empties the file but keeps counting from where it stopped.
+    /// </summary>
+    public long Position => _basePosition + _length;
 
     public void Sync()
     {
@@ -86,6 +95,7 @@ public sealed class WriteAheadLog : IDisposable
     /// <summary>Empties the log. Called after a checkpoint has copied every committed page to the data file.</summary>
     public void Truncate()
     {
+        _basePosition += _length;
         TruncateTo(0);
         Sync();
     }
