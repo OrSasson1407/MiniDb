@@ -41,18 +41,16 @@ internal static class RowStore
         return table with { PrimaryKeyRoot = primary.RootPage, SecondaryIndexRoots = indexRoots ?? table.SecondaryIndexRoots };
     }
 
-    public static object?[]? Get(BufferPool pool, TableInfo table, long key)
-    {
-        byte[]? record = ClusteredTree.Open(pool, table.PrimaryKeyRoot).Find(key);
-        return record is null ? null : RecordCodec.Decode(table.Schema, record);
-    }
+    public static object?[]? Get(BufferPool pool, TableInfo table, long key) =>
+        ClusteredTree.TryRead(pool, table.PrimaryKeyRoot, key, table.Schema, static (schema, record) => RecordCodec.Decode(schema, record), out object?[]? row)
+            ? row
+            : null;
 
     /// <summary>The row with this key as a view that owns a copy of its record, or null.</summary>
-    public static RowView? GetView(BufferPool pool, TableInfo table, long key)
-    {
-        byte[]? record = ClusteredTree.Open(pool, table.PrimaryKeyRoot).Find(key);
-        return record is null ? null : new RowView(table.Schema, record);
-    }
+    public static RowView? GetView(BufferPool pool, TableInfo table, long key) =>
+        ClusteredTree.TryRead(pool, table.PrimaryKeyRoot, key, table.Schema, static (schema, record) => new RowView(schema, record.ToArray()), out RowView view)
+            ? view
+            : null;
 
     /// <summary>Removes a row from the primary tree and from every secondary index. Returns false if the key is absent.</summary>
     public static bool Delete(BufferPool pool, TableInfo table, long key)

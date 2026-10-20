@@ -4,6 +4,9 @@ using MiniDb.Storage;
 
 namespace MiniDb.Index;
 
+/// <summary>Reads a record while its page is pinned. The span is valid only during the call.</summary>
+public delegate TResult RecordReader<in TState, out TResult>(TState state, ReadOnlySpan<byte> record);
+
 /// <summary>
 /// Primary-key tree that keeps each row inside its leaf. A leaf is a slotted page whose cells are
 /// [key 8 bytes][record bytes], kept in key order by the slot directory. Internal nodes are shared with <see cref="BPlusTree"/>.
@@ -45,6 +48,26 @@ public sealed class ClusteredTree
         }
 
         return leaf.Read(index)[KeyBytes..].ToArray();
+    }
+
+    /// <summary>
+    /// Finds the record under <paramref name="key"/> in the tree rooted at <paramref name="rootPage"/> and passes it to
+    /// <paramref name="read"/> straight from the page, so a lookup copies nothing it does not need to.
+    /// </summary>
+    public static bool TryRead<TState, TResult>(
+        IBufferPool pool, long rootPage, long key, TState state, RecordReader<TState, TResult> read, out TResult? result)
+    {
+        using PinnedPage page = FindLeafPinned(pool, rootPage, key);
+        SlottedPage leaf = SlottedPage.Open(page.Data);
+        int index = LowerBound(leaf, key);
+        if (index >= leaf.SlotCount || KeyOf(leaf.Read(index)) != key)
+        {
+            result = default;
+            return false;
+        }
+
+        result = read(state, leaf.Read(index)[KeyBytes..]);
+        return true;
     }
 
     /// <summary>Stores a record under a new key. Throws <see cref="DuplicateKeyException"/> if the key exists.</summary>
@@ -271,12 +294,14 @@ public sealed class ClusteredTree
     }
 
     /// <summary>Descends to the leaf for <paramref name="key"/> and returns it still pinned.</summary>
-    private PinnedPage FindLeafPinned(long key)
+    private PinnedPage FindLeafPinned(long key) => FindLeafPinned(_pool, RootPage, key);
+
+    private static PinnedPage FindLeafPinned(IBufferPool pool, long rootPage, long key)
     {
-        long pageId = RootPage;
+        long pageId = rootPage;
         while (true)
         {
-            PinnedPage page = _pool.Pin(pageId);
+            PinnedPage page = pool.Pin(pageId);
             if (LeafNode.IsLeaf(page.Data))
             {
                 return page;
