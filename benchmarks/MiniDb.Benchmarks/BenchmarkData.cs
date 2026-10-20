@@ -40,8 +40,8 @@ internal static class BenchmarkData
 
     public static string NameFor(long id) => $"user-{id:D8}";
 
-    /// <summary>Roughly one row in ten has score 7, so a filter on it returns a tenth of the table.</summary>
-    public static int ScoreFor(long id) => (int)(id % 10);
+    /// <summary>Each score value matches one row in a thousand, so a filter on score = 7 is highly selective.</summary>
+    public static int ScoreFor(long id) => (int)(id % 1000);
 
     public static void LoadMiniDb(MiniDatabase db, int rows)
     {
