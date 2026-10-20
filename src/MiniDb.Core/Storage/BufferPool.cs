@@ -28,6 +28,8 @@ public sealed class BufferPool : IBufferPool
         return new PinnedPage(this, frame);
     }
 
+    public long AllocatePage() => _store.AllocatePage();
+
     public void FlushAll()
     {
         foreach (PageFrame frame in _cached.Values.Where(f => f.IsDirty))

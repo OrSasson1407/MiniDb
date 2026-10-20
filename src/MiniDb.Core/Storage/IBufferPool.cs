@@ -9,6 +9,9 @@ public interface IBufferPool : IDisposable
     /// <summary>Loads page <paramref name="pageId"/> if needed and pins it until the result is disposed.</summary>
     PinnedPage Pin(long pageId);
 
+    /// <summary>Appends a new zero-filled page to the store and returns its id. The page is not pinned.</summary>
+    long AllocatePage();
+
     /// <summary>Writes every dirty page to the store and clears the dirty flags.</summary>
     void FlushAll();
 
