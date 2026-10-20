@@ -152,4 +152,52 @@ public class SqlExecutionTests : IDisposable
 
         Assert.Throws<MiniDbException>(() => db.Execute("SELECT id FROM scores WHERE n = 'two'"));
     }
+
+    [Fact]
+    public void SecondaryIndex_ReturnsTheSameRowsAsAScan_AndStaysCurrent()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        db.Execute("CREATE TABLE scores (id BIGINT PRIMARY KEY, n INT, label VARCHAR(10))");
+        for (int id = 1; id <= 20; id++)
+        {
+            db.Execute($"INSERT INTO scores VALUES ({id}, {id % 4}, 'r{id}')");
+        }
+
+        db.Execute("CREATE INDEX ON scores (n)");
+
+        Assert.Equal(5, db.Execute("SELECT id FROM scores WHERE n = 2").Rows.Count);
+        db.Execute("INSERT INTO scores VALUES (21, 2, 'x')");
+        Assert.Equal(6, db.Execute("SELECT id FROM scores WHERE n = 2").Rows.Count);
+        db.Execute("DELETE FROM scores WHERE id = 6");
+        Assert.Equal(5, db.Execute("SELECT id FROM scores WHERE n = 2").Rows.Count);
+        Assert.Equal(15, db.Execute("SELECT id FROM scores WHERE n >= 1").Rows.Count);
+    }
+
+    [Fact]
+    public void SecondaryIndex_SurvivesReopen()
+    {
+        using (var db = MiniDatabase.Open(DatabasePath))
+        {
+            db.Execute("CREATE TABLE scores (id BIGINT PRIMARY KEY, n INT)");
+            for (int id = 1; id <= 8; id++)
+            {
+                db.Execute($"INSERT INTO scores VALUES ({id}, {id % 2})");
+            }
+
+            db.Execute("CREATE INDEX ON scores (n)");
+        }
+
+        using var reopened = MiniDatabase.Open(DatabasePath);
+
+        Assert.Equal(4, reopened.Execute("SELECT id FROM scores WHERE n = 1").Rows.Count);
+    }
+
+    [Fact]
+    public void CreateIndexOnTextColumn_IsRejected()
+    {
+        using var db = MiniDatabase.Open(DatabasePath);
+        CreateUsers(db);
+
+        Assert.Throws<MiniDbException>(() => db.Execute("CREATE INDEX ON users (name)"));
+    }
 }

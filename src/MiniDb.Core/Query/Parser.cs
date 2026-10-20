@@ -37,7 +37,7 @@ public sealed class Parser
 
         return Peek.Text switch
         {
-            "CREATE" => ParseCreateTable(),
+            "CREATE" => ParseCreate(),
             "INSERT" => ParseInsert(),
             "SELECT" => ParseSelect(),
             "DELETE" => ParseDelete(),
@@ -45,9 +45,25 @@ public sealed class Parser
         };
     }
 
-    private CreateTableStatement ParseCreateTable()
+    private Statement ParseCreate()
     {
         ExpectKeyword("CREATE");
+        return PeekKeyword("INDEX") ? ParseCreateIndex() : ParseCreateTable();
+    }
+
+    private CreateIndexStatement ParseCreateIndex()
+    {
+        ExpectKeyword("INDEX");
+        ExpectKeyword("ON");
+        string table = ExpectIdentifier("table name");
+        ExpectSymbol("(");
+        string column = ExpectIdentifier("column name");
+        ExpectSymbol(")");
+        return new CreateIndexStatement(table, column);
+    }
+
+    private CreateTableStatement ParseCreateTable()
+    {
         ExpectKeyword("TABLE");
         string name = ExpectIdentifier("table name");
         ExpectSymbol("(");

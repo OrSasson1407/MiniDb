@@ -14,6 +14,7 @@ internal static class SqlEngine
     public static QueryResult Run(MiniDatabase db, string sql) => Parser.Parse(sql) switch
     {
         CreateTableStatement create => CreateTable(db, create),
+        CreateIndexStatement createIndex => CreateIndex(db, createIndex),
         InsertStatement insert => Insert(db, insert),
         SelectStatement select => Select(db, select),
         DeleteStatement delete => Delete(db, delete),
@@ -86,10 +87,11 @@ internal static class SqlEngine
 
     private static IEnumerable<RowView> FilterRows(MiniDatabase db, TableInfo table, Condition? where)
     {
-        IEnumerable<RowView> rows = Planner.Plan(table.Schema, where) switch
+        IEnumerable<RowView> rows = Planner.Plan(table.Schema, where, table.SecondaryIndexRoots.Keys) switch
         {
             PointLookupPlan point => Single(RowStore.GetView(db.Pool, table, point.Key)),
             KeyRangePlan range => RangeRows(db, table, range),
+            IndexRangePlan index => IndexRows(db, table, index),
             _ => RowStore.ScanRecords(db.Pool, table).Select(record => new RowView(table.Schema, record)),
         };
         if (where is not { } condition)
@@ -98,6 +100,42 @@ internal static class SqlEngine
         }
 
         return rows.Where(view => Matches(table.Schema, view, condition));
+    }
+
+    private static QueryResult CreateIndex(MiniDatabase db, CreateIndexStatement statement)
+    {
+        TableInfo table = Load(db, statement.Table);
+        int column = ColumnIndex(table.Schema, statement.Column);
+        ColumnType type = table.Schema.Columns[column].Type;
+        if (type is not (ColumnType.Int32 or ColumnType.Int64))
+        {
+            throw new MiniDbException($"Column '{statement.Column}' cannot be indexed: only INT and BIGINT columns can be in this version.");
+        }
+
+        if (table.SecondaryIndexRoots.ContainsKey(statement.Column))
+        {
+            throw new MiniDbException($"Column '{statement.Column}' already has an index.");
+        }
+
+        db.InWriteTransaction(() =>
+        {
+            db.Catalog.Replace(RowStore.AddIndex(db.Pool, table, column));
+            return true;
+        });
+        return QueryResult.Affected(0);
+    }
+
+    private static IEnumerable<RowView> IndexRows(MiniDatabase db, TableInfo table, IndexRangePlan range)
+    {
+        var tree = BPlusTree.Open(db.Pool, table.SecondaryIndexRoots[range.Column]);
+        foreach ((TreeKey _, RowLocation location) in tree.Range(new TreeKey(range.From, long.MinValue), new TreeKey(range.To, long.MaxValue)))
+        {
+            RowView? view = RowStore.ViewAt(db.Pool, table.Schema, location);
+            if (view is not null)
+            {
+                yield return view.Value;
+            }
+        }
     }
 
     private static IEnumerable<RowView> RangeRows(MiniDatabase db, TableInfo table, KeyRangePlan range)

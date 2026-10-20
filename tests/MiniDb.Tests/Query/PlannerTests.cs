@@ -43,4 +43,21 @@ public class PlannerTests
     {
         Assert.IsType<FullScanPlan>(Planner.Plan(Users, null));
     }
+
+    [Fact]
+    public void EqualityOnIndexedIntColumn_UsesIndexRange()
+    {
+        var schema = new TableSchema(
+            "scores",
+            new[]
+            {
+                new ColumnDefinition("id", ColumnType.Int64),
+                new ColumnDefinition("n", ColumnType.Int32),
+            },
+            primaryKeyIndex: 0);
+
+        AccessPlan plan = Planner.Plan(schema, new Condition("n", CompareOp.Equal, 7L), new[] { "n" });
+
+        Assert.Equal(new IndexRangePlan("n", 7, 7), plan);
+    }
 }

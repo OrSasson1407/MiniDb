@@ -29,3 +29,5 @@ public sealed record InsertStatement(string Table, IReadOnlyList<object> Values)
 public sealed record SelectStatement(string Table, IReadOnlyList<string>? Columns, Condition? Where, int? Limit) : Statement;
 
 public sealed record DeleteStatement(string Table, Condition Where) : Statement;
+
+public sealed record CreateIndexStatement(string Table, string Column) : Statement;

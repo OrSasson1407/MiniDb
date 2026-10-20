@@ -24,7 +24,7 @@ public sealed class Table
         {
             TableInfo table = Load();
             TableInfo updated = RowStore.Insert(_db.Pool, table, values);
-            if (updated.PrimaryKeyRoot != table.PrimaryKeyRoot || updated.HeapTail != table.HeapTail)
+            if (updated.PrimaryKeyRoot != table.PrimaryKeyRoot || updated.HeapTail != table.HeapTail || !SameIndexRoots(table, updated))
             {
                 _db.Catalog.Replace(updated);
             }
@@ -56,6 +56,10 @@ public sealed class Table
 
     /// <summary>Removes the row with this primary key. Returns false if it does not exist.</summary>
     public bool Delete(long id) => _db.InWriteTransaction(() => RowStore.Delete(_db.Pool, Load(), id));
+
+    private static bool SameIndexRoots(TableInfo before, TableInfo after) =>
+        before.SecondaryIndexRoots.Count == after.SecondaryIndexRoots.Count
+        && before.SecondaryIndexRoots.All(pair => after.SecondaryIndexRoots.TryGetValue(pair.Key, out long root) && root == pair.Value);
 
     private TableInfo Load() => _db.Catalog.Find(_name) ?? throw new TableNotFoundException(_name);
 }

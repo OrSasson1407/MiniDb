@@ -9,6 +9,7 @@ public static class Tokenizer
     {
         "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "SELECT", "FROM", "WHERE", "LIMIT",
         "DELETE", "PRIMARY", "KEY", "TRUE", "FALSE", "INT", "BIGINT", "DOUBLE", "BOOL", "VARCHAR",
+        "INDEX", "ON",
     };
 
     public static IReadOnlyList<Token> Tokenize(string sql)
